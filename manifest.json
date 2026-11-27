@@ -1,0 +1,105 @@
+{
+  "id": "com.universaltill.service-logbook",
+  "name": "Service Staff Logbook",
+  "version": "0.1.0",
+  "description": "A logbook of the services each staff member does, the tips they get and what they took in cash and card, for hairdressers, nail bars, barbers and other service shops. Staff do not need a till login. Money is typed in or, where your country requires it, linked to a signed till sale. Works offline; a second till sends its entries to the main till when it can. Nothing is installed or switched on by default.",
+  "author": "Universal Till",
+  "website": "https://universaltill.com",
+  "canonical_type": "page",
+  "runtime": "wasm",
+  "wasm_abi": 3,
+  "entrypoint": "./bin/plugin.wasm",
+  "device_arch": "any",
+  "min_pos_version": "0.40.0",
+  "shop_types": ["service"],
+  "permissions": [
+    "events:receive",
+    "db:own",
+    "ui:page",
+    "ui:slot:admin.pages",
+    "ui:slot:reports.panels",
+    "view:inventory",
+    "view:users",
+    "view:sales",
+    "view:shop",
+    "records:sync",
+    "payout:suggest",
+    "schedule"
+  ],
+  "views_used": [
+    "catalog.items.v1",
+    "users.list.v1",
+    "sales.receipts.v1",
+    "shop.context.v2"
+  ],
+  "db": {
+    "migrations": "db/migrations"
+  },
+  "limits": {
+    "memory_mb": 64,
+    "storage_mb": 50,
+    "long_call_s": 30
+  },
+  "records_forward": {
+    "collections": ["entries"],
+    "snapshots": ["staff", "config"]
+  },
+  "schedules": [
+    {
+      "event": "com.universaltill.service-logbook.maintenance.tick",
+      "every_s": 300,
+      "jitter_s": 60
+    }
+  ],
+  "hooks": [
+    { "event": "ui.view.ask", "action": "view" },
+    { "event": "ui.action.ask", "action": "view" },
+    { "event": "plugin.records.received.ask", "action": "records.apply" },
+    { "event": "com.universaltill.service-logbook.maintenance.tick", "action": "maintenance" },
+    { "event": "export.requested.ask", "action": "export" },
+    { "event": "tips.suggest.ask", "action": "tips" }
+  ],
+  "entries": [
+    {
+      "type": "page",
+      "key": "admin",
+      "label": "service_logbook.admin.title",
+      "route": "/plugin/service-logbook/admin",
+      "view": "logbook.admin",
+      "slot": "admin.pages"
+    },
+    {
+      "type": "page",
+      "key": "log",
+      "label": "service_logbook.log.title",
+      "route": "/plugin/service-logbook/log",
+      "view": "logbook.entry"
+    },
+    {
+      "type": "page",
+      "key": "reports",
+      "label": "service_logbook.reports.title",
+      "route": "/plugin/service-logbook/reports",
+      "view": "logbook.reports",
+      "slot": "reports.panels"
+    },
+    {
+      "type": "button",
+      "key": "open-log",
+      "label": "service_logbook.button.log",
+      "opens_view": "logbook.entry",
+      "sort_order": 20
+    },
+    {
+      "type": "export",
+      "key": "logbook-summary-csv",
+      "label": "service_logbook.export.summary"
+    },
+    {
+      "type": "export",
+      "key": "logbook-entries-csv",
+      "label": "service_logbook.export.entries"
+    }
+  ],
+  "locales": ["en-US"]
+}
