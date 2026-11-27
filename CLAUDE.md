@@ -43,4 +43,7 @@ merge. Any PR that changes what ships (`manifest.json`, `README.md`, `LICENSE`,
 `locales/`, `src/`, `db/`, `go.mod`/`go.sum`, `scripts/build.sh`,
 `scripts/package.sh`) must bump `manifest.json`'s `version`
 (`scripts/check-version-bump.sh`). **Do not publish** until #3157 slice B and
-the records channel are released and the legal texts are reviewed.
+the records channel are released and the legal texts are reviewed. Enforced:
+`auto-tag-release.yml` and `release.yml` run only when the repo variable
+`PUBLISH_ENABLED` is `'true'` (unset by default = no tag, no release, no
+marketplace upload). Setting it is an owner decision.

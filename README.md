@@ -14,6 +14,10 @@ universaltill/ut-docs#3691.
 > `min_pos_version` in `manifest.json` is a placeholder (`0.40.0`) that must be
 > raised to the first till release holding all of that.
 >
+> **Not published.** The release workflows are gated on the repo variable
+> `PUBLISH_ENABLED == 'true'` (unset by default): a merge cuts no tag and
+> uploads nothing until the owner turns it on.
+>
 > **Nothing is installed or enabled by default.** A shop installs it on an
 > explicit click; without the install there are no hooks, no tables and no
 > records sent.

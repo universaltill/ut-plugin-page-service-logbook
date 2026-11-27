@@ -4,6 +4,12 @@ name: Release
 # same repo scripts used locally (scripts/package.sh, scripts/publish.sh,
 # scripts/approve.sh); no release logic lives in YAML.
 
+# PUBLISH GATE (default off): nothing is packaged, released or published
+# unless the repo variable PUBLISH_ENABLED is exactly 'true' (a tag push or a
+# manual dispatch while it is unset does nothing). Enable it only once
+# #3157 slice B and the records channel are released and the legal texts
+# are reviewed (CLAUDE.md "Releases").
+
 permissions:
   contents: write
 
@@ -25,6 +31,7 @@ on:
 
 jobs:
   package-and-publish:
+    if: vars.PUBLISH_ENABLED == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

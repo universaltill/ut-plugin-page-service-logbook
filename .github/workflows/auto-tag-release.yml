@@ -23,6 +23,11 @@ name: Auto-tag release
 # This file is identical across the plugin repos that carry it; the only
 # per-repo input is the repo's own manifest.json, read generically.
 
+# PUBLISH GATE (default off): this plugin must not be tagged or published
+# until #3157 slice B and the records channel are released and the legal
+# texts are reviewed (CLAUDE.md "Releases"). The job runs only when the repo
+# variable PUBLISH_ENABLED is exactly 'true'; unset = nothing is tagged.
+
 on:
   push:
     branches: [main]
@@ -33,6 +38,7 @@ permissions:
 
 jobs:
   tag-if-version-moved:
+    if: vars.PUBLISH_ENABLED == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
