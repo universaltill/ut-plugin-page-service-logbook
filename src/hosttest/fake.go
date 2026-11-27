@@ -34,11 +34,14 @@ type Fake struct {
 	ViewMap map[string]json.RawMessage // view name -> JSON array answer
 	ViewErr map[string]error
 	Role    string // "main" (default) or "replica"
-	Out     []Forwarded
-	Snaps   map[string]json.RawMessage
-	Status  map[string]host.RecordStatus // by record id
-	Time    time.Time
-	idN     int
+	RoleErr error  // when set, Role() fails (host busy / unreadable)
+	// FailQuery: a Query whose SQL contains this text fails (read-error paths).
+	FailQuery string
+	Out       []Forwarded
+	Snaps     map[string]json.RawMessage
+	Status    map[string]host.RecordStatus // by record id
+	Time      time.Time
+	idN       int
 	// Calls to db for write-path assertions.
 	WriteStmts []string
 }
@@ -131,6 +134,9 @@ func (d fakeDB) Exec(q string, args ...any) (int64, error) {
 }
 
 func (d fakeDB) Query(q string, args ...any) ([]host.Row, error) {
+	if d.f.FailQuery != "" && strings.Contains(q, d.f.FailQuery) {
+		return nil, fmt.Errorf("query refused by the test")
+	}
 	rows, err := d.f.sqldb.Query(q, args...)
 	if err != nil {
 		return nil, err
@@ -194,7 +200,12 @@ func (r fakeRecords) Forward(c, id string, payload any) (bool, error) {
 	r.f.Out = append(r.f.Out, Forwarded{c, id, b})
 	return true, nil
 }
-func (r fakeRecords) Role() (string, error) { return r.f.Role, nil }
+func (r fakeRecords) Role() (string, error) {
+	if r.f.RoleErr != nil {
+		return "", r.f.RoleErr
+	}
+	return r.f.Role, nil
+}
 func (r fakeRecords) Status(string) ([]host.RecordStatus, error) {
 	var out []host.RecordStatus
 	for _, s := range r.f.Status {

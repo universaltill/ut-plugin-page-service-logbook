@@ -102,7 +102,7 @@ func (a *App) reportsDoc(q ask, notice []any) (views.Doc, error) {
 			a.deltaTable(q, "service_logbook.compare.month", cmp.Month, name), a.deltaTable(q, "service_logbook.compare.year", cmp.Year, name))
 	}
 	d.Components = append(d.Components, views.Heading("service_logbook.recon.title"))
-	if a.S.MoneyEntry() == "linked" {
+	if a.S.EffectiveMode() == "linked" {
 		d.Components = append(d.Components, views.Notice("info", "service_logbook.recon.by_construction"))
 		return d, nil
 	}

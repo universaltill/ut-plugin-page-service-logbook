@@ -1,5 +1,10 @@
 package store
 
+import (
+	"sort"
+	"time"
+)
+
 // Wire is the forwarded payload of one entry (<= 64 KiB: <= 50 lines, field
 // caps keep an entry far below).
 type Wire struct {
@@ -37,23 +42,32 @@ type WireLine struct {
 }
 
 // ForwardEntry sends one entry through the records channel and marks it
-// queued. The outbox is idempotent per id, so retrying is safe. A host
-// error leaves fwd_state='pending' for the maintenance retry.
+// queued ('na' when the host says this till is main). The outbox is
+// idempotent per id, so retrying is safe. A host or read error leaves
+// fwd_state='pending' for the maintenance retry.
 func (s *Store) ForwardEntry(id string) {
 	e, err := s.GetEntry(id)
 	if err != nil {
 		return
 	}
-	lines, _ := s.Lines(id)
+	lines, err := s.Lines(id)
+	if err != nil {
+		return // never forward an entry without its lines; stays pending
+	}
 	w := Wire{Entry: WireEntry{e.ID, e.AuthorUserID, e.StaffID, e.BusinessDate, e.Currency, e.Payment, e.TotalMinor,
 		e.TipMinor, e.SaleRef, e.SupersedesID, e.Voided, e.Mode, e.CreatedAt}}
 	for _, l := range lines {
 		w.Lines = append(w.Lines, WireLine{l.LineNo, l.ItemID, l.Name, l.Qty, l.AmountMinor, l.Description, l.StaffID})
 	}
-	if _, err := s.h.Records().Forward("entries", id, w); err != nil {
+	queued, err := s.h.Records().Forward("entries", id, w)
+	if err != nil {
 		return
 	}
-	_, _ = s.h.DB().Exec("UPDATE entries SET fwd_state = 'queued' WHERE id = ? AND fwd_state = 'pending'", id)
+	state := "queued"
+	if !queued { // this till is main after all (pending from an unreadable role)
+		state = "na"
+	}
+	_, _ = s.h.DB().Exec("UPDATE entries SET fwd_state = ? WHERE id = ? AND fwd_state = 'pending'", state, id)
 }
 
 // RetryPending re-forwards rows still pending (maintenance tick).
@@ -74,4 +88,74 @@ func (s *Store) RetryPending() int {
 // when #3157 slice B lands (open item, notes/04-dev-plugin.md).
 func (s *Store) SweepOrphans() {
 	_, _ = s.h.DB().Exec(`DELETE FROM entry_lines WHERE entry_id NOT IN (SELECT id FROM entries)`)
+}
+
+// replicaKeepDays: a replica's delivered copies are transient (architect
+// 5.7); the main holds the log.
+const replicaKeepDays = 35
+
+// TrimReplica (replica only, maintenance tick) deletes settled local copies:
+// delivered (queued and gone from the outbox) or rejected rows that are older
+// than 35 days, or whose member left the staff snapshot (archived or erased
+// on the main). Undelivered rows are never trimmed. A trimmed row takes the
+// settled rows it supersedes with it, so no older row becomes current again.
+// Nothing is trimmed when the role, the outbox status or the snapshot cannot
+// be read. Returns the number of entries removed.
+func (s *Store) TrimReplica() int {
+	if role, err := s.h.Records().Role(); err != nil || role != "replica" {
+		return 0
+	}
+	sts, err := s.h.Records().Status("entries")
+	if err != nil {
+		return 0
+	}
+	open := map[string]bool{}
+	for _, st := range sts {
+		if st.Status != "rejected" {
+			open[st.ID] = true
+		}
+	}
+	snap, found, err := s.snapshotStaff()
+	if err != nil {
+		return 0
+	}
+	inSnap := map[string]bool{}
+	for _, st := range snap {
+		inSnap[st.ID] = true
+	}
+	rows, err := s.h.DB().Query("SELECT id, staff_id, supersedes_id, created_at FROM entries WHERE fwd_state = 'queued'")
+	if err != nil {
+		return 0
+	}
+	cutoff := s.h.Clock().Now().UTC().Add(-replicaKeepDays * 24 * time.Hour).Format("2006-01-02T15:04:05Z")
+	settled := map[string]string{} // id -> supersedes_id
+	doomed := map[string]bool{}
+	for _, r := range rows {
+		id := str(r, "id")
+		if open[id] {
+			continue
+		}
+		settled[id] = str(r, "supersedes_id")
+		staff := str(r, "staff_id")
+		if str(r, "created_at") < cutoff || (found && staff != "" && !inSnap[staff]) {
+			doomed[id] = true
+		}
+	}
+	for id := range doomed {
+		for p := settled[id]; p != ""; p = settled[p] {
+			if _, ok := settled[p]; !ok || doomed[p] {
+				break
+			}
+			doomed[p] = true
+		}
+	}
+	ids := make([]string, 0, len(doomed))
+	for id := range doomed {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		s.removeEntry(id)
+	}
+	return len(ids)
 }

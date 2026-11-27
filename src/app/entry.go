@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -56,15 +57,7 @@ func (a *App) offered() (list []item, truncated bool, err error) {
 	if err != nil {
 		return nil, false, err
 	}
-	var cats []string
-	if role, _ := a.H.Records().Role(); role == "replica" {
-		var snap store.SnapConfig
-		if ok, _ := a.H.Records().SnapshotGet("config", &snap); ok {
-			cats = snap.Categories
-		}
-	} else {
-		cats = a.S.Categories()
-	}
+	cats := a.S.EffectiveCategories()
 	chosen := map[string]bool{}
 	for _, c := range cats {
 		chosen[c] = true
@@ -122,17 +115,7 @@ func (a *App) entryDoc(q ask, notice []any, edit *editPrefill) (views.Doc, error
 		d.Components = append(d.Components, views.Empty("service_logbook.log.nostaff.title", "service_logbook.log.nostaff.body"))
 		return d, nil
 	}
-	mode := a.S.MoneyEntry()
-	if role, _ := a.H.Records().Role(); role == "replica" {
-		var snap store.SnapConfig
-		if ok, _ := a.H.Records().SnapshotGet("config", &snap); ok && snap.MoneyEntry == "linked" {
-			mode = "linked"
-		}
-		if store.MoneyEntryForced(a.S.Country()) {
-			mode = "linked"
-		}
-	}
-	if mode == "linked" {
+	if a.S.EffectiveMode() == "linked" { // the same rule the store enforces
 		return a.linkedDoc(d, q, staff)
 	}
 	return a.freeDoc(d, q, staff, edit)
@@ -205,10 +188,19 @@ func (a *App) dayList(d views.Doc, q ask, staff []store.Staff) (views.Doc, error
 	if err != nil {
 		return d, err
 	}
+	// Names: the snapshot on a replica (its own staff table is empty), every
+	// member on the main. A member who left the snapshot is "Former staff".
 	name := map[string]string{}
-	all, _ := a.S.ListStaff(true)
+	all, _ := a.S.StaffForLabels()
 	for _, s := range all {
 		name[s.ID] = s.Label(a.former(q.Locale))
+	}
+	unknown := T(q.Locale, "service_logbook.staff.unknown")
+	label := func(id string) string {
+		if n, ok := name[id]; ok {
+			return n
+		}
+		return unknown
 	}
 	d.Components = append(d.Components, views.Heading("service_logbook.day.title"))
 	if len(entries) == 0 {
@@ -224,9 +216,9 @@ func (a *App) dayList(d views.Doc, q ask, staff []store.Staff) (views.Doc, error
 		if len(hh) >= 16 {
 			hh = hh[11:16]
 		}
-		rows = append(rows, []any{hh, name[e.StaffID], views.Cash(e.TotalMinor, e.Currency), views.Cash(e.TipMinor, e.Currency), chips(e)})
+		rows = append(rows, []any{hh, label(e.StaffID), views.Cash(e.TotalMinor, e.Currency), views.Cash(e.TipMinor, e.Currency), chips(e)})
 		if (act.Manager || act.NoSignIn || (act.UserID != "" && act.UserID == e.AuthorUserID)) && (e.OriginTill == store.LocalTill || a.isMain()) {
-			changeable = append(changeable, views.Opt{Value: e.ID, Label: fmt.Sprintf("%s %s %s %s", hh, name[e.StaffID], export.Decimal(e.TotalMinor, shopDecimals(shop)), e.Currency)})
+			changeable = append(changeable, views.Opt{Value: e.ID, Label: fmt.Sprintf("%s %s %s %s", hh, label(e.StaffID), export.Decimal(e.TotalMinor, shopDecimals(shop)), e.Currency)})
 		}
 	}
 	d.Components = append(d.Components, views.Table([]map[string]any{views.ColText("service_logbook.day.col.time"),
@@ -245,7 +237,7 @@ func (a *App) dayList(d views.Doc, q ask, staff []store.Staff) (views.Doc, error
 
 func shopDecimals(s store.ShopCtx) int { return s.Decimals }
 
-func (a *App) isMain() bool { r, _ := a.H.Records().Role(); return r != "replica" }
+func (a *App) isMain() bool { return !a.S.IsReplica() }
 
 // fwdChips: the state chip of a row. Never colour alone: always text.
 func (a *App) fwdChips(locale string) func(store.Entry) string {
@@ -349,10 +341,13 @@ func (a *App) entryAction(q ask) map[string]any {
 			return fail(err)
 		}
 		return redraw("info", "service_logbook.log.saved")
-	case "edit_start":
-		e, err := a.S.GetEntry(q.formStr("entry"))
-		if err != nil {
+	case "edit_start": // the form opens only for who may save it
+		e, err := a.S.CanChange(act, q.formStr("entry"))
+		if errors.Is(err, store.ErrNotFound) {
 			return fail(store.ErrInvalid)
+		}
+		if err != nil {
+			return fail(err)
 		}
 		lines, _ := a.S.Lines(e.ID)
 		doc, err := a.entryDoc(q, nil, &editPrefill{e, lines})

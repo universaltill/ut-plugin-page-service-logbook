@@ -32,22 +32,25 @@ func (s *Store) PublishSnapshots() {
 	if cats == nil {
 		cats = []string{}
 	}
-	_, _ = s.h.Records().SnapshotSet("config", SnapConfig{MoneyEntry: s.MoneyEntry(), Categories: cats})
+	_, _ = s.h.Records().SnapshotSet("config", SnapConfig{MoneyEntry: s.EffectiveMode(), Categories: cats})
 }
 
 // Picker returns the staff a popup may log for. On a replica it is the last
 // admin-pull snapshot; synced=false means none yet (the popup then offers
 // nothing: no free-typed staff).
 func (s *Store) Picker() (staff []Staff, synced bool, err error) {
-	role, _ := s.h.Records().Role()
-	if role != "replica" {
+	if !s.IsReplica() {
 		l, err := s.ListStaff(false)
 		return l, true, err
 	}
+	return s.snapshotStaff()
+}
+
+func (s *Store) snapshotStaff() (staff []Staff, found bool, err error) {
 	var snap struct {
 		Staff []SnapStaff `json:"staff"`
 	}
-	found, err := s.h.Records().SnapshotGet("staff", &snap)
+	found, err = s.h.Records().SnapshotGet("staff", &snap)
 	if err != nil || !found {
 		return nil, false, err
 	}
@@ -55,4 +58,40 @@ func (s *Store) Picker() (staff []Staff, synced bool, err error) {
 		staff = append(staff, Staff{ID: x.ID, Name: x.Name, Colour: x.Colour, LinkedUserID: x.LinkedUserID, Status: "active"})
 	}
 	return staff, true, nil
+}
+
+// ActiveStaff is the member an entry may be logged for: on a replica a
+// member of the staff snapshot (the replica's own staff table is never
+// filled), on the main an active row of staff. ErrInvalid otherwise.
+func (s *Store) ActiveStaff(id string) (Staff, error) {
+	if id == "" {
+		return Staff{}, ErrInvalid
+	}
+	if s.IsReplica() {
+		list, found, err := s.snapshotStaff()
+		if err != nil || !found {
+			return Staff{}, ErrInvalid
+		}
+		for _, st := range list {
+			if st.ID == id {
+				return st, nil
+			}
+		}
+		return Staff{}, ErrInvalid
+	}
+	st, err := s.GetStaff(id)
+	if err != nil || st.Archived() {
+		return Staff{}, ErrInvalid
+	}
+	return st, nil
+}
+
+// StaffForLabels names staff in lists: the snapshot on a replica, every
+// member (archived included) on the main.
+func (s *Store) StaffForLabels() ([]Staff, error) {
+	if s.IsReplica() {
+		l, _, err := s.snapshotStaff()
+		return l, err
+	}
+	return s.ListStaff(true)
 }

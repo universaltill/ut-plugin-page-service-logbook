@@ -71,12 +71,12 @@ func TestDEAndTRCannotUseFree(t *testing.T) {
 		if err := e.s.SetMoneyEntry("free"); !errors.Is(err, store.ErrForbidden) {
 			t.Fatalf("%s must not switch to free: %v", c, err)
 		}
-		if e.s.MoneyEntry() != "linked" {
+		if e.s.EffectiveMode() != "linked" {
 			t.Fatal("forced linked")
 		}
 	}
 	e := newEnv(t, "GB")
-	if e.s.MoneyEntry() != "free" || e.s.SetMoneyEntry("linked") != nil || e.s.MoneyEntry() != "linked" {
+	if e.s.EffectiveMode() != "free" || e.s.SetMoneyEntry("linked") != nil || e.s.EffectiveMode() != "linked" {
 		t.Fatal("GB may choose")
 	}
 }
@@ -131,9 +131,8 @@ func TestAuthorOrManagerOnly(t *testing.T) {
 }
 
 func TestReplicaCannotChangeOtherTillRows(t *testing.T) {
-	e := newEnv(t, "GB")
-	e.f.Role = "replica"
-	st := mustStaff(t, e, "Ann")
+	e, sts := newReplica(t, "GB", nil, "Ann")
+	st := sts[0]
 	// a row that came from another till is only on main; simulate the row
 	// existing on a replica anyway: still refused.
 	_, _ = e.f.DB().Exec(`INSERT INTO entries (id, origin_till_id, author_user_id, staff_id, business_date, currency, payment_type, total_minor, created_at)
@@ -173,9 +172,8 @@ func TestZeroMoneyDeleteAnyCountry(t *testing.T) {
 }
 
 func TestReplicaForwardsEveryRowAndMainDoesNot(t *testing.T) {
-	e := newEnv(t, "GB")
-	e.f.Role = "replica"
-	st := mustStaff(t, e, "Ann")
+	e, sts := newReplica(t, "GB", nil, "Ann")
+	st := sts[0]
 	en, err := e.s.CreateFree(ann, free(st.ID, 4000, 100))
 	if err != nil {
 		t.Fatal(err)
@@ -202,9 +200,8 @@ func TestReplicaForwardsEveryRowAndMainDoesNot(t *testing.T) {
 }
 
 func TestPendingRetriedByMaintenance(t *testing.T) {
-	e := newEnv(t, "GB")
-	e.f.Role = "replica"
-	st := mustStaff(t, e, "Ann")
+	e, sts := newReplica(t, "GB", nil, "Ann")
+	st := sts[0]
 	en, _ := e.s.CreateFree(ann, free(st.ID, 100, 0))
 	_, _ = e.f.DB().Exec("UPDATE entries SET fwd_state='pending' WHERE id=?", en.ID)
 	e.f.Out = nil

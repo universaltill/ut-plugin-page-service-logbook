@@ -2,6 +2,7 @@ package store
 
 import (
 	"encoding/json"
+	"fmt"
 	"regexp"
 	"strings"
 	"unicode/utf8"
@@ -74,8 +75,12 @@ func nullable(s string) any {
 
 func (s *Store) now() string { return s.h.Clock().Now().UTC().Format("2006-01-02T15:04:05Z") }
 
-// AddStaff creates an active member and republishes the snapshot.
+// AddStaff creates an active member and republishes the snapshot. Staff
+// are managed on the main only: a replica's staff come from the snapshot.
 func (s *Store) AddStaff(in StaffInput) (Staff, error) {
+	if s.IsReplica() {
+		return Staff{}, ErrForbidden
+	}
 	in, err := s.validate(in)
 	if err != nil {
 		return Staff{}, err
@@ -91,6 +96,9 @@ func (s *Store) AddStaff(in StaffInput) (Staff, error) {
 
 // EditStaff changes an active member.
 func (s *Store) EditStaff(id string, in StaffInput) (Staff, error) {
+	if s.IsReplica() {
+		return Staff{}, ErrForbidden
+	}
 	cur, err := s.GetStaff(id)
 	if err != nil {
 		return Staff{}, err
@@ -153,24 +161,32 @@ const (
 )
 
 // RemoveInput carries the GB confirmation: the typed name and the "I have
-// exported" toggle. Ignored on the archive branch.
+// exported" toggle. Ignored on the archive branch. Former renders the
+// pseudonym an archived member is confirmed by ("Former staff #N").
 type RemoveInput struct {
 	TypedName string
 	Exported  bool
+	Former    func(n int) string
 }
 
 // RemoveStaff is ADR-0149 §4. GB: hard delete of the member and all their
 // entries and lines, only after the typed-name and exported confirmations.
-// Any other or unknown country: archive and pseudonymise, amounts kept.
+// Any other or unknown country: archive and pseudonymise, amounts kept. An
+// archived member (e.g. archived while the country was unreadable) may still
+// be erased in GB, confirmed by typing the pseudonym.
 func (s *Store) RemoveStaff(id string, in RemoveInput) (RemoveResult, error) {
+	if s.IsReplica() {
+		return "", ErrForbidden
+	}
 	st, err := s.GetStaff(id)
 	if err != nil {
 		return "", err
 	}
-	if st.Archived() {
+	gb := s.Country() == "GB"
+	if st.Archived() && !gb {
 		return "", ErrForbidden
 	}
-	if s.Country() != "GB" {
+	if !gb {
 		if _, err := s.h.DB().Exec(`UPDATE staff SET display_name = '', colour = '', linked_user_id = NULL, status = 'archived',
 			pseudo_no = (SELECT COALESCE(MAX(pseudo_no), 0) + 1 FROM staff), archived_at = ? WHERE id = ? AND status = 'active'`,
 			s.now(), id); err != nil {
@@ -179,16 +195,23 @@ func (s *Store) RemoveStaff(id string, in RemoveInput) (RemoveResult, error) {
 		s.PublishSnapshots()
 		return Archived, nil
 	}
-	if !in.Exported || strings.TrimSpace(in.TypedName) != st.Name {
+	former := in.Former
+	if former == nil {
+		former = func(n int) string { return fmt.Sprintf("#%d", n) }
+	}
+	if !in.Exported || strings.TrimSpace(in.TypedName) == "" || strings.TrimSpace(in.TypedName) != st.Label(former) {
 		return "", ErrNotConfirmed
 	}
-	// Order: lines, entries, then the staff row last; a crash midway leaves a
-	// staff row whose delete can simply be repeated.
+	// The member's rows AND every row they supersede (walked up the chain):
+	// deleting only a superseding row would make the older row it replaced
+	// current again. Order: lines, entries, then the staff row last; each
+	// statement is atomic and recomputes the set, so a crash midway leaves a
+	// delete that can simply be repeated.
 	db := s.h.DB()
-	if _, err := db.Exec(`DELETE FROM entry_lines WHERE staff_id = ? OR entry_id IN (SELECT id FROM entries WHERE staff_id = ?)`, id, id); err != nil {
+	if _, err := db.Exec(`DELETE FROM entry_lines WHERE staff_id = ? OR entry_id IN (`+doomedEntries+`)`, id, id); err != nil {
 		return "", err
 	}
-	if _, err := db.Exec(`DELETE FROM entries WHERE staff_id = ?`, id); err != nil {
+	if _, err := db.Exec(`DELETE FROM entries WHERE id IN (`+doomedEntries+`)`, id); err != nil {
 		return "", err
 	}
 	if _, err := db.Exec(`DELETE FROM staff WHERE id = ?`, id); err != nil {
@@ -197,6 +220,12 @@ func (s *Store) RemoveStaff(id string, in RemoveInput) (RemoveResult, error) {
 	s.PublishSnapshots()
 	return Deleted, nil
 }
+
+// doomedEntries selects the ids of a member's entries (arg: staff id) and of
+// every entry they supersede, transitively.
+const doomedEntries = `WITH RECURSIVE doomed(id) AS (SELECT id FROM entries WHERE staff_id = ?
+ UNION SELECT e.supersedes_id FROM entries e JOIN doomed d ON e.id = d.id WHERE e.supersedes_id IS NOT NULL)
+ SELECT id FROM doomed`
 
 // Label is the display name, or the pseudonym key and number for archived
 // staff; the caller renders "Former staff #N" through its i18n key.

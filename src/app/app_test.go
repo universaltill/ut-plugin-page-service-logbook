@@ -244,7 +244,7 @@ func TestDEPopupIsLinkedAndForgedFreeSaveRefused(t *testing.T) {
 	}
 	// admin cannot switch to free either
 	docOf(t)(r.a.Action(ask(app.ViewAdmin, "settings_save", mgr, map[string]any{"money_entry": "free"})))
-	if r.a.S.MoneyEntry() != "linked" {
+	if r.a.S.EffectiveMode() != "linked" {
 		t.Fatal("DE stays linked")
 	}
 }
@@ -326,7 +326,8 @@ func TestReportsManagersOnlyAndContent(t *testing.T) {
 
 func TestRecordsApplyUsesCoreTillIDAndIsIdempotent(t *testing.T) {
 	r := newRig(t, "GB")
-	w := map[string]any{"entry": map[string]any{"id": "e1", "author_user_id": "u1", "staff_id": "s1", "business_date": "2026-11-27", "currency": "GBP",
+	st := r.staff(t, "Ann")
+	w := map[string]any{"entry": map[string]any{"id": "e1", "author_user_id": "u1", "staff_id": st.ID, "business_date": "2026-11-27", "currency": "GBP",
 		"payment_type": "cash", "total_minor": 100, "mode": "free", "created_at": "2026-11-27T09:00:00Z", "origin_till_id": "forged"},
 		"lines": []map[string]any{{"line_no": 1, "name": "Cut", "qty": 1, "amount_minor": 100}}}
 	ev, _ := json.Marshal(map[string]any{"collection": "entries", "id": "e1", "from_till_id": "tillB", "payload": w})
@@ -388,9 +389,8 @@ func TestExportAndTipsHandlers(t *testing.T) {
 }
 
 func TestMaintenanceForwardsPendingAndSweeps(t *testing.T) {
-	r := newRig(t, "GB")
-	r.f.Role = "replica"
-	st := r.staff(t, "Ann")
+	r, sts := replicaRig(t, "GB", nil, "Ann")
+	st := sts[0]
 	e, _ := r.a.S.CreateFree(store.Actor{UserID: "u1"}, store.FreeInput{StaffID: st.ID, Payment: "cash", TipMinor: 1})
 	r.f.DB().Exec("UPDATE entries SET fwd_state='pending' WHERE id=?", e.ID)
 	r.f.DB().Exec(`INSERT INTO entry_lines (entry_id, line_no, name, qty, amount_minor) VALUES ('ghost', 1, 'x', 1, 1)`)

@@ -125,11 +125,28 @@ func (s *Store) SetMeta(k, v string) error {
 	return err
 }
 
-// MoneyEntry is the effective mode: forced linked in DE/TR, else the stored
-// setting, default free. Read per call, never cached (country can change).
-func (s *Store) MoneyEntry() string {
+// IsReplica reports a joined (replica) till. An unreadable role counts as a
+// replica: admin writes are then refused and new rows stay pending until the
+// maintenance retry learns the real role (fail closed, never lose a row).
+func (s *Store) IsReplica() bool {
+	r, err := s.h.Records().Role()
+	return err != nil || r == "replica"
+}
+
+// EffectiveMode is the one money-entry mode the UI and the store both obey:
+// forced linked in DE/TR; on a replica the main's config snapshot (the
+// replica's own meta is never consulted); on the main the stored setting.
+// Default free. Read per call, never cached (country can change).
+func (s *Store) EffectiveMode() string {
 	if MoneyEntryForced(s.Country()) {
 		return "linked"
+	}
+	if s.IsReplica() {
+		var c SnapConfig
+		if ok, err := s.h.Records().SnapshotGet("config", &c); err == nil && ok && c.MoneyEntry == "linked" {
+			return "linked"
+		}
+		return "free"
 	}
 	if s.GetMeta(MetaMoneyEntry) == "linked" {
 		return "linked"
@@ -138,8 +155,11 @@ func (s *Store) MoneyEntry() string {
 }
 
 // SetMoneyEntry refuses "free" where the country forces linked, no matter
-// what the form posted.
+// what the form posted. Settings live on the main only.
 func (s *Store) SetMoneyEntry(mode string) error {
+	if s.IsReplica() {
+		return ErrForbidden
+	}
 	if mode != "free" && mode != "linked" {
 		return ErrInvalid
 	}
@@ -156,8 +176,23 @@ func (s *Store) Categories() []string {
 	return out
 }
 
-// SetCategories stores the chosen category ids.
+// EffectiveCategories: the config snapshot on a replica, else Categories.
+func (s *Store) EffectiveCategories() []string {
+	if s.IsReplica() {
+		var c SnapConfig
+		if ok, err := s.h.Records().SnapshotGet("config", &c); err == nil && ok {
+			return c.Categories
+		}
+		return nil
+	}
+	return s.Categories()
+}
+
+// SetCategories stores the chosen category ids (main only).
 func (s *Store) SetCategories(ids []string) error {
+	if s.IsReplica() {
+		return ErrForbidden
+	}
 	b, _ := json.Marshal(ids)
 	return s.SetMeta(MetaCategories, string(b))
 }

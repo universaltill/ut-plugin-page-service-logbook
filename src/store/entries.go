@@ -55,6 +55,10 @@ type Line struct {
 
 const maxLines = 50
 
+// MaxMinor bounds every amount, tip and total (1e11 minor units: far above
+// any real service, far below int64 overflow when 50 lines are summed).
+const MaxMinor int64 = 100_000_000_000
+
 // currentWhere selects the CURRENT entries (alias e): not voided, not
 // shadowed, no live child (ADR-0149, architect §5.6).
 const currentWhere = `e.voided = 0 AND e.shadowed = 0 AND NOT EXISTS
@@ -103,7 +107,7 @@ func validLines(in []LineInput) error {
 		return ErrInvalid
 	}
 	for _, l := range in {
-		if l.Qty < 1 || l.Qty > 999 || l.AmountMinor < 0 || strings.TrimSpace(l.Name) == "" ||
+		if l.Qty < 1 || l.Qty > 999 || l.AmountMinor < 0 || l.AmountMinor > MaxMinor || strings.TrimSpace(l.Name) == "" ||
 			utf8.RuneCountInString(l.Name) > 120 || utf8.RuneCountInString(l.Description) > 200 {
 			return ErrInvalid
 		}
@@ -115,42 +119,49 @@ func (s *Store) validateFree(in FreeInput) error {
 	if in.Payment != "cash" && in.Payment != "card" {
 		return ErrInvalid
 	}
-	if in.TipMinor < 0 || (len(in.Lines) == 0 && in.TipMinor == 0) {
+	if in.TipMinor < 0 || in.TipMinor > MaxMinor || (len(in.Lines) == 0 && in.TipMinor == 0) {
 		return ErrInvalid
 	}
 	if err := validLines(in.Lines); err != nil {
 		return err
 	}
-	st, err := s.GetStaff(in.StaffID)
-	if err != nil || st.Archived() {
+	if sumLines(in.Lines) > MaxMinor {
 		return ErrInvalid
 	}
-	return nil
+	_, err := s.ActiveStaff(in.StaffID)
+	return err
+}
+
+func sumLines(ls []LineInput) int64 {
+	var t int64
+	for _, l := range ls {
+		t += l.AmountMinor
+	}
+	return t
 }
 
 // CreateFree writes a new free-mode entry. Free entries are refused where
 // the country forces linked money entry (server-side, whatever the form).
 func (s *Store) CreateFree(a Actor, in FreeInput) (Entry, error) {
-	if s.MoneyEntry() != "free" {
+	if s.EffectiveMode() != "free" {
 		return Entry{}, ErrForbidden
-	}
-	return s.createFree(a, in, "")
-}
-
-func (s *Store) createFree(a Actor, in FreeInput, supersedes string) (Entry, error) {
-	if err := s.validateFree(in); err != nil {
-		return Entry{}, err
 	}
 	shop, err := s.Shop()
 	if err != nil || len(shop.Currency) != 3 || shop.BusinessDate == "" {
 		return Entry{}, host.ErrUnavailable
 	}
-	var total int64
-	for _, l := range in.Lines {
-		total += l.AmountMinor
+	return s.createFree(a, in, "", shop.BusinessDate, shop.Currency)
+}
+
+// createFree validates and writes a free entry on the given business date and
+// currency (an edit keeps the original's, never today's).
+func (s *Store) createFree(a Actor, in FreeInput, supersedes, date, currency string) (Entry, error) {
+	if err := s.validateFree(in); err != nil {
+		return Entry{}, err
 	}
+	total := sumLines(in.Lines)
 	e := Entry{ID: s.h.IDs().NewID(), OriginTill: LocalTill, AuthorUserID: a.UserID, StaffID: in.StaffID,
-		BusinessDate: shop.BusinessDate, Currency: shop.Currency, Payment: in.Payment, TotalMinor: total,
+		BusinessDate: date, Currency: currency, Payment: in.Payment, TotalMinor: total,
 		TipMinor: in.TipMinor, SupersedesID: supersedes, Mode: "free", CreatedAt: s.now()}
 	if err := s.write(e, in.Lines); err != nil {
 		return Entry{}, err
@@ -162,15 +173,24 @@ func (s *Store) createFree(a Actor, in FreeInput, supersedes string) (Entry, err
 // join from entries, so lines of a half-written entry are invisible), then
 // forwards. #3157 slice B may add a transactional batch; until then this
 // ordering is the contract.
-func (s *Store) write(e Entry, lines []LineInput) error { return s.writeNumbered(e, lines, nil) }
+func (s *Store) write(e Entry, lines []LineInput) error {
+	fwd, err := s.insert(e, lines, nil)
+	if err == nil && fwd {
+		s.ForwardEntry(e.ID)
+	}
+	return err
+}
 
-// writeNumbered is write with explicit line numbers (linked entries keep the
-// receipt's line_no so a sale line is linked at most once).
-func (s *Store) writeNumbered(e Entry, lines []LineInput, nos []int) error {
+// insert writes one entry without forwarding, with explicit line numbers
+// when nos is set (linked entries keep the receipt's line_no so a sale line
+// is linked at most once). fwd: this till is known to be a replica, so the
+// caller forwards. An unreadable role writes fwd_state='pending' (never
+// 'na'): the maintenance retry then forwards it or settles it as 'na'.
+func (s *Store) insert(e Entry, lines []LineInput, nos []int) (fwd bool, err error) {
 	db := s.h.DB()
-	role, _ := s.h.Records().Role()
+	role, rerr := s.h.Records().Role()
 	e.FwdState = "na"
-	if role == "replica" {
+	if rerr != nil || role == "replica" {
 		e.FwdState = "pending"
 	}
 	for i, l := range lines {
@@ -181,7 +201,7 @@ func (s *Store) writeNumbered(e Entry, lines []LineInput, nos []int) error {
 		if _, err := db.Exec(`INSERT INTO entry_lines (entry_id, line_no, item_id, name, qty, amount_minor, description, staff_id)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, e.ID, no, nullable(l.ItemID), l.Name, l.Qty, l.AmountMinor,
 			nullable(l.Description), nullable(l.StaffID)); err != nil {
-			return err
+			return false, err
 		}
 	}
 	if _, err := db.Exec(`INSERT INTO entries (id, origin_till_id, author_user_id, staff_id, business_date, currency, payment_type,
@@ -189,12 +209,16 @@ func (s *Store) writeNumbered(e Entry, lines []LineInput, nos []int) error {
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`, e.ID, e.OriginTill, e.AuthorUserID, nullable(e.StaffID),
 		e.BusinessDate, e.Currency, e.Payment, e.TotalMinor, e.TipMinor, nullable(e.SaleRef), nullable(e.SupersedesID),
 		b2i(e.Voided), e.FwdState, e.Mode, e.CreatedAt); err != nil {
-		return err
+		return false, err
 	}
-	if role == "replica" {
-		s.ForwardEntry(e.ID)
-	}
-	return nil
+	return rerr == nil && role == "replica", nil
+}
+
+// removeEntry deletes an entry's lines and row (undo of a failed multi-entry
+// save; best effort).
+func (s *Store) removeEntry(id string) {
+	_, _ = s.h.DB().Exec("DELETE FROM entry_lines WHERE entry_id = ?", id)
+	_, _ = s.h.DB().Exec("DELETE FROM entries WHERE id = ?", id)
 }
 
 func b2i(b bool) int {
@@ -210,12 +234,15 @@ func (s *Store) mayChange(a Actor, e Entry) error {
 	if !(a.Manager || a.NoSignIn || (a.UserID != "" && a.UserID == e.AuthorUserID)) {
 		return ErrForbidden
 	}
-	role, _ := s.h.Records().Role()
-	if e.OriginTill != LocalTill && role != "main" {
+	if e.OriginTill != LocalTill && s.IsReplica() {
 		return ErrForbidden
 	}
 	return nil
 }
+
+// CanChange reports whether a may edit or void entry id now (the edit form
+// opens only when it may: the same rule the save re-checks).
+func (s *Store) CanChange(a Actor, id string) (Entry, error) { return s.changeable(a, id) }
 
 func (s *Store) changeable(a Actor, id string) (Entry, error) {
 	e, err := s.GetEntry(id)
@@ -241,10 +268,10 @@ func (s *Store) Edit(a Actor, id string, in FreeInput) (Entry, error) {
 	if err != nil {
 		return Entry{}, err
 	}
-	if old.Mode != "free" || old.SaleRef != "" || s.MoneyEntry() != "free" {
+	if old.Mode != "free" || old.SaleRef != "" || s.EffectiveMode() != "free" {
 		return Entry{}, ErrForbidden // linked amounts come from the sale
 	}
-	return s.createFree(a, in, id)
+	return s.createFree(a, in, id, old.BusinessDate, old.Currency)
 }
 
 // Void writes a void row (totals 0, voided=1) superseding the entry.

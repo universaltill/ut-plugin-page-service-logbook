@@ -116,10 +116,12 @@ func (a *App) TipsSuggest(raw json.RawMessage) (any, error) {
 }
 
 // Maintenance (every 5 minutes): retry unforwarded rows, republish the
-// snapshots, remove lines of entries that were never committed.
+// snapshots (main), trim settled local copies (replica), remove lines of
+// entries that were never committed.
 func (a *App) Maintenance() (any, error) {
 	a.S.RetryPending()
 	a.S.PublishSnapshots()
+	a.S.TrimReplica()
 	a.S.SweepOrphans()
 	return nil, nil
 }

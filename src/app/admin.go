@@ -46,6 +46,10 @@ func (a *App) categories() ([]category, error) {
 }
 
 func (a *App) adminDoc(q ask, notice []any, step *adminStep) (views.Doc, error) {
+	if a.S.IsReplica() { // staff and settings live on the main; never edited here
+		return views.Doc{Title: views.K("service_logbook.admin.title"),
+			Components: []any{views.Notice("info", "service_logbook.admin.replica_notice")}}, nil
+	}
 	if !q.manager() {
 		return views.Doc{Title: views.K("service_logbook.admin.title"),
 			Components: []any{views.Notice("error", "service_logbook.err.manager_only")}}, nil
@@ -92,11 +96,20 @@ func (a *App) adminDoc(q ask, notice []any, step *adminStep) (views.Doc, error) 
 			views.TextField("name", "service_logbook.admin.field.name", ""),
 			views.TextField("colour", "service_logbook.admin.field.colour", ""),
 			views.Select("user", "service_logbook.admin.field.user", userOpts, "")))
-	var active []views.Opt
+	var active, removable []views.Opt
 	for _, st := range staff {
 		if !st.Archived() {
 			active = append(active, views.Opt{Value: st.ID, Label: st.Name})
+			removable = append(removable, views.Opt{Value: st.ID, Label: st.Name})
+		} else if country == "GB" { // GB may still erase an archived member
+			removable = append(removable, views.Opt{Value: st.ID, Label: st.Label(a.former(q.Locale))})
 		}
+	}
+	if len(removable) > 100 {
+		removable = removable[:100]
+	}
+	if len(active) > 100 {
+		active = active[:100]
 	}
 	if len(active) > 0 {
 		d.Components = append(d.Components,
@@ -105,11 +118,14 @@ func (a *App) adminDoc(q ask, notice []any, step *adminStep) (views.Doc, error) 
 				views.Select("staff", "service_logbook.admin.field.staff", active, ""),
 				views.TextField("name", "service_logbook.admin.field.name", ""),
 				views.TextField("colour", "service_logbook.admin.field.colour", ""),
-				views.Select("user", "service_logbook.admin.field.user", userOpts, "")),
+				views.Select("user", "service_logbook.admin.field.user", userOpts, "")))
+	}
+	if len(removable) > 0 {
+		d.Components = append(d.Components,
 			views.Heading("service_logbook.admin.remove"),
 			views.Text("service_logbook.admin.remove.help"),
 			views.Form("staff_remove", "service_logbook.admin.remove.submit",
-				views.Select("staff", "service_logbook.admin.field.staff", active, "")))
+				views.Select("staff", "service_logbook.admin.field.staff", removable, "")))
 	}
 	// Settings.
 	d.Components = append(d.Components, views.Heading("service_logbook.admin.settings"))
@@ -119,7 +135,7 @@ func (a *App) adminDoc(q ask, notice []any, step *adminStep) (views.Doc, error) 
 	}
 	fields := []map[string]any{}
 	if !forced {
-		fields = append(fields, views.Select("money_entry", "service_logbook.admin.field.mode", modeOpts, a.S.MoneyEntry()))
+		fields = append(fields, views.Select("money_entry", "service_logbook.admin.field.mode", modeOpts, a.S.EffectiveMode()))
 	}
 	cats, _ := a.categories()
 	chosen := map[string]bool{}
@@ -140,17 +156,18 @@ func (a *App) adminDoc(q ask, notice []any, step *adminStep) (views.Doc, error) 
 
 func (a *App) removeStepDoc(d views.Doc, q ask, st *adminStep) views.Doc {
 	d.Components = append(d.Components, views.Heading("service_logbook.admin.remove"))
+	label := st.staff.Label(a.former(q.Locale))
 	if !st.gb {
 		d.Components = append(d.Components, views.Notice("info", "service_logbook.remove.archive_notice"),
 			views.Form("staff_remove_confirm", "service_logbook.remove.archive_submit",
-				views.Select("staff", "service_logbook.admin.field.staff", []views.Opt{{Value: st.staff.ID, Label: st.staff.Name}}, st.staff.ID)))
+				views.Select("staff", "service_logbook.admin.field.staff", []views.Opt{{Value: st.staff.ID, Label: label}}, st.staff.ID)))
 		return d
 	}
 	d.Components = append(d.Components,
 		views.Notice("warn", "service_logbook.remove.gb_warning"),
 		views.Text("service_logbook.remove.gb_export_hint"),
 		views.Form("staff_remove_confirm", "service_logbook.remove.gb_submit",
-			views.Select("staff", "service_logbook.admin.field.staff", []views.Opt{{Value: st.staff.ID, Label: st.staff.Name}}, st.staff.ID),
+			views.Select("staff", "service_logbook.admin.field.staff", []views.Opt{{Value: st.staff.ID, Label: label}}, st.staff.ID),
 			views.TextField("typed_name", "service_logbook.remove.typed_name", ""),
 			views.Toggle("exported", "service_logbook.remove.exported", false)))
 	return d
@@ -165,7 +182,9 @@ func (a *App) adminAction(q ask) map[string]any {
 		}
 		return views.Answer(doc)
 	}
-	if !q.manager() { // re-checked on every action, whatever the page showed
+	// re-checked on every action, whatever the page showed: a replica never
+	// edits staff or settings, a non-manager never does either.
+	if a.S.IsReplica() || !q.manager() {
 		doc, _ := a.adminDoc(q, nil, nil)
 		return views.Answer(doc)
 	}
@@ -188,14 +207,15 @@ func (a *App) adminAction(q ask) map[string]any {
 		}
 		return redraw(ok("service_logbook.admin.saved"))
 	case "staff_remove":
+		gb := a.S.Country() == "GB"
 		st, err := a.S.GetStaff(q.formStr("staff"))
-		if err != nil || st.Archived() {
+		if err != nil || (st.Archived() && !gb) {
 			return bad("service_logbook.err.invalid")
 		}
-		doc, _ := a.adminDoc(q, nil, &adminStep{staff: st, gb: a.S.Country() == "GB"})
+		doc, _ := a.adminDoc(q, nil, &adminStep{staff: st, gb: gb})
 		return views.Answer(doc)
 	case "staff_remove_confirm":
-		res, err := a.S.RemoveStaff(q.formStr("staff"), store.RemoveInput{TypedName: q.formStr("typed_name"), Exported: q.formBool("exported")})
+		res, err := a.S.RemoveStaff(q.formStr("staff"), store.RemoveInput{TypedName: q.formStr("typed_name"), Exported: q.formBool("exported"), Former: a.former(q.Locale)})
 		switch {
 		case err == store.ErrNotConfirmed:
 			st, gerr := a.S.GetStaff(q.formStr("staff"))

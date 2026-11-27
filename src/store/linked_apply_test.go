@@ -111,6 +111,7 @@ func wire(id, staff string, total int64, sup string) store.Wire {
 
 func TestApplyIdempotentAndStampsOrigin(t *testing.T) {
 	e := newEnv(t, "GB")
+	seedStaff(t, e, "s1")
 	w := wire("a1", "s1", 1000, "")
 	if err := e.s.Apply("tillB", w); err != nil {
 		t.Fatal(err)
@@ -155,6 +156,7 @@ func TestApplyValidatesEveryField(t *testing.T) {
 func TestApplyReplicaCannotSupersedeMainRowOrAnotherTill(t *testing.T) {
 	e := newEnv(t, "GB")
 	st := mustStaff(t, e, "Ann")
+	seedStaff(t, e, "s1")
 	own, _ := e.s.CreateFree(ann, free(st.ID, 1000, 0))
 	err := e.s.Apply("tillB", wire("b1", st.ID, 2000, own.ID))
 	if err == nil || err.Retry || err.Reason != "not_authorised" {
@@ -173,6 +175,7 @@ func TestApplyReplicaCannotSupersedeMainRowOrAnotherTill(t *testing.T) {
 
 func TestApplyUnknownParentStoredAndConflictMainWins(t *testing.T) {
 	e := newEnv(t, "GB")
+	seedStaff(t, e, "s1")
 	if err := e.s.Apply("tillA", wire("a2", "s1", 2000, "a1")); err != nil {
 		t.Fatalf("unknown parent is stored (append-only log): %v", err)
 	}
@@ -229,6 +232,7 @@ func TestApplyMainAuthoredWinsOverLaterReplicaChild(t *testing.T) {
 // overwrite the first stored record (idempotent = first wins).
 func TestApplyDuplicateIDFirstWins_Tester(t *testing.T) {
 	e := newEnv(t, "GB")
+	seedStaff(t, e, "s1")
 	if err := e.s.Apply("tillB", wire("a1", "s1", 1000, "")); err != nil {
 		t.Fatal(err)
 	}

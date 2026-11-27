@@ -34,3 +34,14 @@ func mustStaff(t *testing.T, e env, name string) store.Staff {
 	}
 	return st
 }
+
+// seedStaff inserts a member with a fixed id (Apply tests address staff by
+// id; the main only accepts records for staff it knows).
+func seedStaff(t *testing.T, e env, ids ...string) {
+	t.Helper()
+	for _, id := range ids {
+		if _, err := e.f.DB().Exec(`INSERT INTO staff (id, display_name, status, created_at) VALUES (?, ?, 'active', '2026-11-27T00:00:00Z')`, id, "Staff "+id); err != nil {
+			t.Fatal(err)
+		}
+	}
+}

@@ -130,8 +130,12 @@ type LinkInput struct {
 }
 
 // CreateLinked writes one entry per distinct staff member (same sale_ref).
+// All or nothing: every group is built and validated (staff, lines, amounts:
+// a negative line, such as a discount line, refuses the sale) before the
+// first write; a write error undoes the entries already written; forwarding
+// starts only once every entry is stored.
 func (s *Store) CreateLinked(a Actor, in LinkInput) ([]Entry, error) {
-	if s.MoneyEntry() != "linked" {
+	if s.EffectiveMode() != "linked" {
 		return nil, ErrForbidden
 	}
 	offered, err := s.Receipts(in.DaysAgo)
@@ -153,12 +157,14 @@ func (s *Store) CreateLinked(a Actor, in LinkInput) ([]Entry, error) {
 		}
 		return nil, ErrInvalid
 	}
+	if rc.TipMinor < 0 || rc.TipMinor > MaxMinor {
+		return nil, ErrInvalid
+	}
 	done, err := s.linkedLines(rc.ID)
 	if err != nil {
 		return nil, err
 	}
 	type group struct {
-		total int64
 		lines []LineInput
 		nos   []int
 	}
@@ -169,12 +175,14 @@ func (s *Store) CreateLinked(a Actor, in LinkInput) ([]Entry, error) {
 		if done[l.LineNo] {
 			continue
 		}
+		if l.TotalMinor < 0 {
+			return nil, ErrInvalid
+		}
 		sid, ok := in.Assign[l.LineNo]
 		if !ok {
 			return nil, ErrInvalid
 		}
-		st, err := s.GetStaff(sid)
-		if err != nil || st.Archived() {
+		if _, err := s.ActiveStaff(sid); err != nil {
 			return nil, ErrInvalid
 		}
 		if first == "" {
@@ -190,19 +198,23 @@ func (s *Store) CreateLinked(a Actor, in LinkInput) ([]Entry, error) {
 		if l.Quantity >= 1 && l.Quantity <= 999 && l.Quantity == float64(int(l.Quantity)) {
 			q = int(l.Quantity)
 		}
-		g.total += l.TotalMinor
 		g.lines = append(g.lines, LineInput{ItemID: l.ItemID, Name: clip(l.Name, 120), Qty: q, AmountMinor: l.TotalMinor, StaffID: sid})
 		g.nos = append(g.nos, l.LineNo)
 	}
 	if len(order) == 0 {
 		return nil, ErrConflict
 	}
+	for _, sid := range order {
+		if err := validLines(groups[sid].lines); err != nil || sumLines(groups[sid].lines) > MaxMinor {
+			return nil, ErrInvalid
+		}
+	}
 	tipTo := in.TipTo
 	if tipTo == "" {
 		tipTo = first
 	}
 	if rc.TipMinor > 0 {
-		if st, err := s.GetStaff(tipTo); err != nil || st.Archived() {
+		if _, err := s.ActiveStaff(tipTo); err != nil {
 			return nil, ErrInvalid
 		}
 		if groups[tipTo] == nil {
@@ -211,19 +223,33 @@ func (s *Store) CreateLinked(a Actor, in LinkInput) ([]Entry, error) {
 		}
 	}
 	sort.Strings(order)
-	var out []Entry
+	var written []string
+	forward := false
 	for _, sid := range order {
 		g := groups[sid]
 		e := Entry{ID: s.h.IDs().NewID(), OriginTill: LocalTill, AuthorUserID: a.UserID, StaffID: sid,
-			BusinessDate: rc.BusinessDate, Currency: rc.Currency, Payment: rc.PaymentType(), TotalMinor: g.total,
+			BusinessDate: rc.BusinessDate, Currency: rc.Currency, Payment: rc.PaymentType(), TotalMinor: sumLines(g.lines),
 			SaleRef: rc.ID, Mode: "linked", CreatedAt: s.now()}
 		if sid == tipTo {
 			e.TipMinor = rc.TipMinor
 		}
-		if err := s.writeNumbered(e, g.lines, g.nos); err != nil {
-			return out, err
+		fwd, err := s.insert(e, g.lines, g.nos)
+		if err != nil {
+			s.removeEntry(e.ID) // its lines may have landed
+			for _, id := range written {
+				s.removeEntry(id)
+			}
+			return nil, err
 		}
-		got, _ := s.GetEntry(e.ID)
+		forward = forward || fwd
+		written = append(written, e.ID)
+	}
+	out := make([]Entry, 0, len(written))
+	for _, id := range written {
+		if forward {
+			s.ForwardEntry(id)
+		}
+		got, _ := s.GetEntry(id)
 		out = append(out, got)
 	}
 	return out, nil
