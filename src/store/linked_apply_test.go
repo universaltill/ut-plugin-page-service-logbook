@@ -224,3 +224,19 @@ func TestApplyMainAuthoredWinsOverLaterReplicaChild(t *testing.T) {
 		t.Fatal("loser kept for audit, marked shadowed")
 	}
 }
+
+// Tester gap (mutation): a redelivery with different content must not
+// overwrite the first stored record (idempotent = first wins).
+func TestApplyDuplicateIDFirstWins_Tester(t *testing.T) {
+	e := newEnv(t, "GB")
+	if err := e.s.Apply("tillB", wire("a1", "s1", 1000, "")); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.s.Apply("tillB", wire("a1", "s1", 9999, "")); err != nil {
+		t.Fatalf("duplicate is success: %v", err)
+	}
+	got, _ := e.s.GetEntry("a1")
+	if got.TotalMinor != 1000 {
+		t.Fatalf("first delivery must win, got %d", got.TotalMinor)
+	}
+}

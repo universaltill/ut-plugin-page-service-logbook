@@ -201,3 +201,21 @@ func TestReconcile(t *testing.T) {
 		t.Fatalf("limited to 31 days: %v", err)
 	}
 }
+
+// Tester gap (mutation): till takings include the payment tip, and the diff
+// is logbook minus till (sign matters to the operator).
+func TestReconcileTipsAndDiffSign_Tester(t *testing.T) {
+	e := newEnv(t, "GB")
+	a := mustStaff(t, e, "Ann")
+	seed(t, e, a.ID, "2026-11-27", "GBP", "cash", 3000, 0, 1)
+	r1 := receipt("r1", false, 0, map[string]any{"method_id": "cash", "amount_minor": 2500, "tip_minor": 200})
+	r1["currency"] = "GBP"
+	e.f.SetView("sales.receipts.v1", []map[string]any{r1})
+	rows, err := e.s.Reconcile(1)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("%v %+v", err, rows)
+	}
+	if rows[0].TillCash != 2700 || rows[0].CashDiff() != 300 {
+		t.Fatalf("till cash = amount+tip, diff = log - till: %+v", rows[0])
+	}
+}
