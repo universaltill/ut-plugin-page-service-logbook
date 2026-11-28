@@ -49,6 +49,11 @@ type Fake struct {
 	// event's check and its write (the host runs events concurrently).
 	BeforeExec   func()
 	BeforeExecOn string
+	// RecordsCap, when > 0, is the host's per-event cap on records_* calls:
+	// call RecordsCap+1 fails (the real host refuses it). RecordsCalls counts
+	// them; a test sets it to 0 at the start of each simulated event.
+	RecordsCap   int
+	RecordsCalls int
 }
 
 // Forwarded is one queued outbox row.
@@ -191,6 +196,9 @@ func (v fakeViews) Query(name string, _ any) (json.RawMessage, error) {
 type fakeRecords struct{ f *Fake }
 
 func (r fakeRecords) Forward(c, id string, payload any) (bool, error) {
+	if err := r.f.recordsCall(); err != nil {
+		return false, err
+	}
 	if !collRe.MatchString(c) || !idRe.MatchString(id) {
 		return false, fmt.Errorf("bad input")
 	}
@@ -210,12 +218,18 @@ func (r fakeRecords) Forward(c, id string, payload any) (bool, error) {
 	return true, nil
 }
 func (r fakeRecords) Role() (string, error) {
+	if err := r.f.recordsCall(); err != nil {
+		return "", err
+	}
 	if r.f.RoleErr != nil {
 		return "", r.f.RoleErr
 	}
 	return r.f.Role, nil
 }
 func (r fakeRecords) Status(string) ([]host.RecordStatus, error) {
+	if err := r.f.recordsCall(); err != nil {
+		return nil, err
+	}
 	var out []host.RecordStatus
 	for _, s := range r.f.Status {
 		out = append(out, s)
@@ -223,6 +237,9 @@ func (r fakeRecords) Status(string) ([]host.RecordStatus, error) {
 	return out, nil
 }
 func (r fakeRecords) SnapshotSet(c string, v any) (bool, error) {
+	if err := r.f.recordsCall(); err != nil {
+		return false, err
+	}
 	if r.f.Role == "replica" {
 		return false, nil
 	}
@@ -234,6 +251,9 @@ func (r fakeRecords) SnapshotSet(c string, v any) (bool, error) {
 	return true, nil
 }
 func (r fakeRecords) SnapshotGet(c string, out any) (bool, error) {
+	if err := r.f.recordsCall(); err != nil {
+		return false, err
+	}
 	b, ok := r.f.Snaps[c]
 	if !ok {
 		return false, nil
@@ -250,4 +270,12 @@ type fakeIDs struct{ f *Fake }
 func (i fakeIDs) NewID() string {
 	i.f.idN++
 	return fmt.Sprintf("00000000-0000-4000-8000-%012d", i.f.idN)
+}
+
+func (f *Fake) recordsCall() error {
+	f.RecordsCalls++
+	if f.RecordsCap > 0 && f.RecordsCalls > f.RecordsCap {
+		return fmt.Errorf("records: per-event call cap %d reached", f.RecordsCap)
+	}
+	return nil
 }

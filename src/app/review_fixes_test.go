@@ -3,6 +3,9 @@
 package app_test
 
 import (
+	"encoding/json"
+	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -122,5 +125,48 @@ func TestEditStartNeedsAuthorOrManager(t *testing.T) {
 	d = docOf(t)(r.a.Action(ask(app.ViewEntry, "edit_start", mgr, map[string]any{"entry": e.ID})))
 	if !strings.Contains(text(d), "edit_save") {
 		t.Fatalf("manager may: %s", text(d))
+	}
+}
+
+// The host caps records_* calls at 64 per event and an unreadable role fails
+// closed to replica. The day list asked the role once per replica-origin
+// entry, so on a main till with 90 such entries only the first ones stayed
+// editable. The role is read once per event now (fix-plug finding 7).
+func TestDayListReadsRoleOncePerEvent(t *testing.T) {
+	r := newRig(t, "GB")
+	st, err := r.a.S.AddStaff(store.StaffInput{Name: "Ann"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 90; i++ {
+		w := store.Wire{Entry: store.WireEntry{ID: fmt.Sprintf("b%03d", i), Author: "u1", StaffID: st.ID, BusinessDate: "2026-11-27",
+			Currency: "GBP", Payment: "cash", TotalMinor: 100, Mode: "free", CreatedAt: "2026-11-27T09:00:00Z"},
+			Lines: []store.WireLine{{LineNo: 1, Name: "Cut", Qty: 1, AmountMinor: 100}}}
+		if ae := r.a.S.Apply("tillB", w); ae != nil {
+			t.Fatal(ae)
+		}
+	}
+	r.f.RecordsCap, r.f.RecordsCalls = 64, 0
+	d := docOf(t)(r.a.View(ask(app.ViewEntry, "", mgr, nil)))
+	b, _ := json.Marshal(d)
+	seen := map[string]bool{}
+	for _, m := range regexp.MustCompile(`"value":"(b\d{3})"`).FindAllStringSubmatch(string(b), -1) {
+		seen[m[1]] = true
+	}
+	if n := len(seen); n != 90 {
+		t.Fatalf("editable replica entries = %d, want 90 (records calls %d)", n, r.f.RecordsCalls)
+	}
+}
+
+// The role memo is per event: a till that joins as a replica between two
+// events is a replica on the next one.
+func TestRoleReadAgainOnEachEvent(t *testing.T) {
+	r := newRig(t, "GB")
+	if d := docOf(t)(r.a.View(ask(app.ViewAdmin, "", mgr, nil))); strings.Contains(text(d), "admin.replica_notice") {
+		t.Fatal("main shown as replica")
+	}
+	r.f.Role = "replica"
+	if d := docOf(t)(r.a.View(ask(app.ViewAdmin, "", mgr, nil))); !strings.Contains(text(d), "admin.replica_notice") {
+		t.Fatal("the role of the previous event was reused")
 	}
 }

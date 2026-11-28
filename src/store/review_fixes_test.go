@@ -314,6 +314,7 @@ func TestRoleErrorWritesPending(t *testing.T) {
 	e := newEnv(t, "GB")
 	st := mustStaff(t, e, "Ann")
 	e.f.RoleErr = errors.New("host busy")
+	e.s.BeginEvent() // a new event: the role is read again
 	en, err := e.s.CreateFree(ann, free(st.ID, 100, 0))
 	if err != nil {
 		t.Fatal(err)
@@ -322,6 +323,7 @@ func TestRoleErrorWritesPending(t *testing.T) {
 		t.Fatalf("unknown role must be pending: %s", g.FwdState)
 	}
 	e.f.RoleErr = nil
+	e.s.BeginEvent()
 	e.s.RetryPending()
 	if g, _ := e.s.GetEntry(en.ID); g.FwdState != "na" || len(e.f.Out) != 0 {
 		t.Fatalf("on a main the retry settles it as na: %s %d", g.FwdState, len(e.f.Out))

@@ -188,7 +188,7 @@ func (s *Store) write(e Entry, lines []LineInput) error {
 // 'na'): the maintenance retry then forwards it or settles it as 'na'.
 func (s *Store) insert(e Entry, lines []LineInput, nos []int) (fwd bool, err error) {
 	db := s.h.DB()
-	role, rerr := s.h.Records().Role()
+	role, rerr := s.Role()
 	e.FwdState = "na"
 	if rerr != nil || role == "replica" {
 		e.FwdState = "pending"

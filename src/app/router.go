@@ -12,6 +12,7 @@ import (
 // View answers ui.view.ask (GET). Anything that fails to read the till's own
 // data draws one "can't be shown" notice and stores nothing.
 func (a *App) View(raw json.RawMessage) (any, error) {
+	a.S.BeginEvent() // the role is read once per event
 	q, err := decode(raw)
 	if err != nil {
 		return nil, err
@@ -21,6 +22,7 @@ func (a *App) View(raw json.RawMessage) (any, error) {
 
 // Action answers ui.action.ask (POST): do the action, then draw the view.
 func (a *App) Action(raw json.RawMessage) (any, error) {
+	a.S.BeginEvent() // the role is read once per event
 	q, err := decode(raw)
 	if err != nil {
 		return nil, err
@@ -58,6 +60,7 @@ func (a *App) render(q ask, notice []any) map[string]any {
 // RecordsApply is plugin.records.received.ask on the main till. The sender's
 // till id is core's from_till_id; the payload's own origin is never read.
 func (a *App) RecordsApply(raw json.RawMessage) (any, error) {
+	a.S.BeginEvent() // the role is read once per event
 	var in struct {
 		Collection string     `json:"collection"`
 		FromTill   string     `json:"from_till_id"`
@@ -66,7 +69,7 @@ func (a *App) RecordsApply(raw json.RawMessage) (any, error) {
 	if err := json.Unmarshal(raw, &in); err != nil || in.Collection != "entries" {
 		return map[string]any{"ok": false, "retry": false, "reason": "invalid"}, nil
 	}
-	if role, _ := a.H.Records().Role(); role == "replica" {
+	if role, _ := a.S.Role(); role == "replica" {
 		return map[string]any{"ok": false, "retry": false, "reason": "not_main"}, nil
 	}
 	if ae := a.S.Apply(in.FromTill, in.Payload); ae != nil {
@@ -78,6 +81,7 @@ func (a *App) RecordsApply(raw json.RawMessage) (any, error) {
 // Export answers export.requested.ask (core gates Settings > Data to
 // managers). entry_key picks the summary or the entries CSV.
 func (a *App) Export(raw json.RawMessage) (any, error) {
+	a.S.BeginEvent() // the role is read once per event
 	var in struct {
 		From, To, EntryKey, Locale string
 	}
@@ -102,6 +106,7 @@ func (a *App) Export(raw json.RawMessage) (any, error) {
 // TipsSuggest answers tips.suggest.ask for the payout form pre-fill (#7108,
 // plugin half). Core keeps only real users and confirms with the manager.
 func (a *App) TipsSuggest(raw json.RawMessage) (any, error) {
+	a.S.BeginEvent() // the role is read once per event
 	var in struct {
 		From string `json:"from"`
 		To   string `json:"to"`
@@ -119,6 +124,7 @@ func (a *App) TipsSuggest(raw json.RawMessage) (any, error) {
 // snapshots (main), trim settled local copies (replica), remove lines of
 // entries that were never committed.
 func (a *App) Maintenance() (any, error) {
+	a.S.BeginEvent() // the role is read once per event
 	a.S.RetryPending()
 	a.S.PublishSnapshots()
 	a.S.TrimReplica()

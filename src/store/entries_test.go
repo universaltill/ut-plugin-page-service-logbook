@@ -141,6 +141,7 @@ func TestReplicaCannotChangeOtherTillRows(t *testing.T) {
 		t.Fatalf("%v", err)
 	}
 	e.f.Role = "main"
+	e.s.BeginEvent() // the role is read once per event
 	if _, err := e.s.Void(boss, "x1"); err != nil {
 		t.Fatalf("main may: %v", err)
 	}

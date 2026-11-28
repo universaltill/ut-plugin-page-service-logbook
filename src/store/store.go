@@ -25,7 +25,29 @@ var (
 const LocalTill = "local"
 
 // Store is the domain handle.
-type Store struct{ h host.Host }
+type Store struct {
+	h host.Host
+	// The till's role, read at most once per event (BeginEvent clears it):
+	// the host caps records_* calls at 64 per event, and a role read past
+	// the cap fails closed to replica, so a per-row read turned a main till
+	// into a replica half-way through a long list.
+	roleRead bool
+	role     string
+	roleErr  error
+}
+
+// BeginEvent forgets what was read for the previous event (the role). The
+// app calls it at the start of every event it handles.
+func (s *Store) BeginEvent() { s.roleRead, s.role, s.roleErr = false, "", nil }
+
+// Role is records_role, read once per event (see Store).
+func (s *Store) Role() (string, error) {
+	if !s.roleRead {
+		s.role, s.roleErr = s.h.Records().Role()
+		s.roleRead = true
+	}
+	return s.role, s.roleErr
+}
 
 // New returns a Store over h.
 func New(h host.Host) *Store { return &Store{h: h} }
@@ -129,7 +151,7 @@ func (s *Store) SetMeta(k, v string) error {
 // replica: admin writes are then refused and new rows stay pending until the
 // maintenance retry learns the real role (fail closed, never lose a row).
 func (s *Store) IsReplica() bool {
-	r, err := s.h.Records().Role()
+	r, err := s.Role()
 	return err != nil || r == "replica"
 }
 

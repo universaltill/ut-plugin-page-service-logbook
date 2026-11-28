@@ -110,7 +110,7 @@ const replicaKeepDays = 35
 // Nothing is trimmed when the role, the outbox status or the snapshot cannot
 // be read. Returns the number of entries removed.
 func (s *Store) TrimReplica() int {
-	if role, err := s.h.Records().Role(); err != nil || role != "replica" {
+	if role, err := s.Role(); err != nil || role != "replica" {
 		return 0
 	}
 	sts, err := s.h.Records().Status("entries")
