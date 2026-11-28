@@ -58,8 +58,8 @@ universaltill/ut-docs#3691.
 ## Layout
 
 ```
-manifest.json            ABI 3 page plugin, db.migrations, records_forward
-db/migrations/           0001_init.sql (one statement per db_exec)
+manifest.json            ABI 2 page plugin, db.migrations, records_forward
+db/migrations/           0001_init.sql, 0002_line_claims.sql (one statement per db_exec)
 locales/en.json          English only; de/tr arrive from Weblate (ADR-0160)
 src/host/                ports: DB, Views, Records, Clock, IDs (+ wasm.go binding)
 src/hosttest/            in-memory host for native tests (real SQLite via modernc)

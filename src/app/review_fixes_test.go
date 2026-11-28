@@ -170,3 +170,26 @@ func TestRoleReadAgainOnEachEvent(t *testing.T) {
 		t.Fatal("the role of the previous event was reused")
 	}
 }
+
+// RecordsApply on a till whose role cannot be read applies nothing (fail
+// closed) and asks core to retry: the record is not lost (fix-plug finding 9).
+func TestRecordsApplyRoleUnreadableFailsClosed(t *testing.T) {
+	r := newRig(t, "GB")
+	st, _ := r.a.S.AddStaff(store.StaffInput{Name: "Ann"})
+	r.f.RoleErr = fmt.Errorf("host busy")
+	raw, _ := json.Marshal(map[string]any{"collection": "entries", "from_till_id": "tillB", "payload": store.Wire{
+		Entry: store.WireEntry{ID: "b1", Author: "u1", StaffID: st.ID, BusinessDate: "2026-11-27", Currency: "GBP",
+			Payment: "cash", TotalMinor: 100, Mode: "free", CreatedAt: "2026-11-27T09:00:00Z"},
+		Lines: []store.WireLine{{LineNo: 1, Name: "Cut", Qty: 1, AmountMinor: 100}}}})
+	out, err := r.a.RecordsApply(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := out.(map[string]any)
+	if m["ok"] != false || m["retry"] != true {
+		t.Fatalf("answer = %v", m)
+	}
+	if r.a.S.CountEntries() != 0 {
+		t.Fatal("applied with an unreadable role")
+	}
+}

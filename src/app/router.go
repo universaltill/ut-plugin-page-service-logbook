@@ -69,7 +69,11 @@ func (a *App) RecordsApply(raw json.RawMessage) (any, error) {
 	if err := json.Unmarshal(raw, &in); err != nil || in.Collection != "entries" {
 		return map[string]any{"ok": false, "retry": false, "reason": "invalid"}, nil
 	}
-	if role, _ := a.S.Role(); role == "replica" {
+	role, err := a.S.Role()
+	if err != nil { // fail closed: apply nothing, core delivers it again later
+		return map[string]any{"ok": false, "retry": true, "reason": "role_unreadable"}, nil
+	}
+	if role == "replica" {
 		return map[string]any{"ok": false, "retry": false, "reason": "not_main"}, nil
 	}
 	if ae := a.S.Apply(in.FromTill, in.Payload); ae != nil {
