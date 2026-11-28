@@ -1,0 +1,264 @@
+package plugins
+
+// Real-host test for the service logbook (ut-docs#3700-#3705), the same way
+// slice B proved the plugin DB: the REAL plugin.wasm, built from the plugin
+// repo, runs in the till's real wasm runtime against the real host functions
+// (db_exec/db_query with migrations run by the real data manager, records_*,
+// view_query). It lives in the plugin repo as a template because the host
+// packages are internal to universal-till: scripts/realhost-test.sh copies it
+// into a universal-till checkout (as internal/plugins/logbook_realguest_test.go)
+// and runs it. Skipped unless LOGBOOK_DIR names the plugin checkout.
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/universaltill/universal-till/internal/data"
+	"github.com/universaltill/universal-till/internal/db"
+	"github.com/universaltill/universal-till/internal/db/plugindb"
+	"github.com/universaltill/universal-till/internal/paths"
+)
+
+const logbookID = "com.universaltill.service-logbook"
+
+var (
+	lbManager = map[string]any{"user_id": "u9", "role": "manager", "permissions": []string{"reports", "sale"}}
+)
+
+func lbAsk(view, action string, form map[string]any) map[string]any {
+	return map[string]any{"view": view, "action": action, "locale": "en", "form": form, "params": map[string]string{}, "operator": lbManager}
+}
+
+type lbRig struct {
+	t     *testing.T
+	d     *db.DB
+	w     *WasmRuntime
+	pdb   *plugindb.Manager
+	wasm  string
+	m     *Manifest
+	codeD string
+}
+
+func (r *lbRig) event(typ string, payload any) (json.RawMessage, error) {
+	body, _ := json.Marshal(payload)
+	r.w.mu.Lock()
+	r.w.db = r.d.DB
+	r.w.mu.Unlock()
+	return r.w.HandleEvent(context.Background(), logbookID, Event{ID: "ev-" + typ, Type: typ, Timestamp: time.Now(), Payload: body})
+}
+
+func (r *lbRig) rows(q string) []map[string]any {
+	r.t.Helper()
+	st, err := DataManager().Open(context.Background(), logbookID, plugindb.Options{NoMigrate: true})
+	if err != nil {
+		r.t.Fatalf("open plugin db: %v", err)
+	}
+	raw, err := st.Query(context.Background(), q)
+	if err != nil {
+		r.t.Fatalf("query %q: %v", q, err)
+	}
+	var out []map[string]any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		r.t.Fatalf("decode %s: %v", raw, err)
+	}
+	return out
+}
+
+func (r *lbRig) setting(k, v string) {
+	r.t.Helper()
+	if _, err := r.d.DB.Exec(`INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, k, v, time.Now().UTC()); err != nil {
+		r.t.Fatal(err)
+	}
+}
+
+func newLogbookRig(t *testing.T) *lbRig {
+	t.Helper()
+	src := os.Getenv("LOGBOOK_DIR")
+	if src == "" {
+		t.Skip("LOGBOOK_DIR not set (scripts/realhost-test.sh sets it)")
+	}
+	wasm := filepath.Join(t.TempDir(), "plugin.wasm")
+	cmd := exec.Command("go", "build", "-o", wasm, "./src")
+	cmd.Dir = src
+	cmd.Env = append(os.Environ(), "GOOS=wasip1", "GOARCH=wasm")
+	if raw, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("build plugin wasm: %v\n%s", err, raw)
+	}
+
+	mf, err := os.Open(filepath.Join(src, "manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := ParseManifest(mf) // the host's own manifest validation
+	mf.Close()
+	if err != nil {
+		t.Fatalf("the host refuses the logbook manifest: %v", err)
+	}
+	if m.EffectiveWasmABI() != 2 {
+		t.Fatalf("wasm ABI = %d, want 2", m.EffectiveWasmABI())
+	}
+
+	root := t.TempDir()
+	prev := paths.DataDir()
+	paths.Init(root)
+	t.Cleanup(func() { closeAllPluginData(); paths.Init(prev) })
+	database, err := db.Open(filepath.Join(root, "till.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { database.Close() })
+
+	// Install tree: manifest + migrations, as the installer lays it out.
+	codeD := filepath.Join(root, "plugins", logbookID, m.Version)
+	if err := os.MkdirAll(filepath.Join(codeD, "db"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(filepath.Join(src, "manifest.json"))
+	if err := os.WriteFile(filepath.Join(codeD, "manifest.json"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.CopyFS(filepath.Join(codeD, "db", "migrations"), os.DirFS(filepath.Join(src, "db", "migrations"))); err != nil {
+		t.Fatal(err)
+	}
+
+	seedPlugin(t, database.DB, logbookID)
+	if _, err := database.DB.Exec(`INSERT INTO plugin_catalog (id, version, name, runtime, entrypoint, package_url, sha256, min_pos_version, api_version, published_at)
+		VALUES (?, ?, 'test', 'wasm', './plugin.wasm', 'file://x', 'x', '0.0.1', '1.0', datetime('now'))`, logbookID, m.Version); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.DB.Exec(`UPDATE plugins SET version = ? WHERE id = ?`, m.Version, logbookID); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range m.Permissions {
+		grantPerm(t, database.DB, logbookID, p)
+	}
+	if up, err := migrateDataWith(context.Background(), DataManager(), m, codeD, ""); err != nil || up == nil {
+		t.Fatalf("migrate (real data manager): %v %v", up, err)
+	}
+
+	w := NewWasmRuntime(t.TempDir())
+	t.Cleanup(func() { w.Close(context.Background()) })
+	if err := w.load(logbookID, m.Version, wasm); err != nil {
+		t.Fatalf("load real plugin.wasm: %v", err)
+	}
+	return &lbRig{t: t, d: database, w: w, wasm: wasm, m: m, codeD: codeD}
+}
+
+// The real module reads and writes its own SQLite through the real host:
+// staff add -> row in plugin.db; the retention declaration is read from the
+// installed manifest by the real lifecycle code.
+func TestLogbookRealGuest_StaffAndRetention(t *testing.T) {
+	r := newLogbookRig(t)
+	if r.m.Retention == nil || r.m.Retention.KeepYears < 1 {
+		t.Fatalf("manifest must declare retention.keep_years > 0, got %+v", r.m.Retention)
+	}
+	if years, _ := retentionFromTree(filepath.Join(paths.DataDir(), "plugins"), logbookID); years != r.m.Retention.KeepYears {
+		t.Fatalf("retentionFromTree = %d, want %d", years, r.m.Retention.KeepYears)
+	}
+	if _, err := r.event("ui.action.ask", lbAsk("logbook.admin", "staff_add", map[string]any{"name": "Ann", "colour": "#aabbcc"})); err != nil {
+		t.Fatalf("staff_add: %v", err)
+	}
+	got := r.rows(`SELECT display_name, colour, status FROM staff`)
+	if len(got) != 1 || got[0]["display_name"] != "Ann" || got[0]["colour"] != "#aabbcc" || got[0]["status"] != "active" {
+		t.Fatalf("staff rows = %v", got)
+	}
+	// Revoking db:own takes effect on the next event: nothing more is written.
+	if err := data.NewPluginRepo(r.d.DB).SetPermission(context.Background(), logbookID, "db:own", false); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = r.event("ui.action.ask", lbAsk("logbook.admin", "staff_add", map[string]any{"name": "Bob"}))
+	if n := len(r.rows(`SELECT id FROM staff`)); n != 1 {
+		t.Fatalf("a staff row was written without db:own (%d rows)", n)
+	}
+}
+
+// #3703, main side, through the real records channel: the same wire record
+// delivered twice (plugin.records.received.ask) lands exactly once, stamped
+// with core's from_till_id; a replica refuses to apply; a bad collection is
+// refused without a retry.
+func TestLogbookRealGuest_ApplyOnMainOnce(t *testing.T) {
+	r := newLogbookRig(t)
+	if _, err := r.event("ui.action.ask", lbAsk("logbook.admin", "staff_add", map[string]any{"name": "Ann"})); err != nil {
+		t.Fatal(err)
+	}
+	staffID := r.rows(`SELECT id FROM staff`)[0]["id"].(string)
+	wire := map[string]any{
+		"entry": map[string]any{"id": "0b0e5f0a-1111-4222-8333-444455556666", "author_user_id": "u1", "staff_id": staffID, "business_date": "2026-11-27",
+			"currency": "GBP", "payment_type": "cash", "total_minor": 2500, "tip_minor": 300, "sale_ref": "", "supersedes_id": "", "voided": false,
+			"mode": "free", "created_at": "2026-11-27T10:00:00Z"},
+		"lines": []map[string]any{{"line_no": 1, "item_id": "", "name": "Cut", "qty": 1, "amount_minor": 2500, "description": "", "staff_id": ""}},
+	}
+	apply := map[string]any{"collection": "entries", "from_till_id": "till-phone", "payload": wire}
+	for i := 0; i < 2; i++ {
+		out, err := r.event("plugin.records.received.ask", apply)
+		if err != nil || !strings.Contains(string(out), `"ok":true`) {
+			t.Fatalf("apply #%d: %s %v", i+1, out, err)
+		}
+	}
+	got := r.rows(`SELECT origin_till_id, total_minor, tip_minor FROM entries`)
+	if len(got) != 1 || got[0]["origin_till_id"] != "till-phone" || got[0]["total_minor"] != float64(2500) || got[0]["tip_minor"] != float64(300) {
+		t.Fatalf("applied entries = %v", got)
+	}
+	if lines := r.rows(`SELECT line_no FROM entry_lines`); len(lines) != 1 {
+		t.Fatalf("applied lines = %v", lines)
+	}
+	out, _ := r.event("plugin.records.received.ask", map[string]any{"collection": "other", "from_till_id": "t", "payload": wire})
+	if !strings.Contains(string(out), `"retry":false`) {
+		t.Fatalf("a foreign collection must be a terminal refusal: %s", out)
+	}
+	r.setting("sync.primary_url", "http://main.invalid")
+	out, _ = r.event("plugin.records.received.ask", apply)
+	if !strings.Contains(string(out), "not_main") {
+		t.Fatalf("a replica must refuse to apply: %s", out)
+	}
+}
+
+// #3703, replica side: an entry logged on a replica is queued in core's
+// outbox exactly once (the maintenance retry does not duplicate it) and its
+// payload applies on a main. Needs shop.context.v2 business_date (core card
+// ut-docs#7231); until the running core has it the entry cannot be created
+// and the test skips (it runs by itself once the core lands).
+func TestLogbookRealGuest_ReplicaForward(t *testing.T) {
+	r := newLogbookRig(t)
+	prev := data.SetCoreViewShopContext(func(context.Context, *sql.DB) (data.ShopContextRow, error) {
+		return data.ShopContextRow{CurrencyCode: "GBP", CurrencyDecimals: 2, Locale: "en"}, nil
+	})
+	t.Cleanup(func() { data.SetCoreViewShopContext(prev) })
+	if _, err := r.event("ui.action.ask", lbAsk("logbook.admin", "staff_add", map[string]any{"name": "Ann"})); err != nil {
+		t.Fatal(err)
+	}
+	staff := r.rows(`SELECT id FROM staff`)[0]["id"].(string)
+	r.setting("sync.primary_url", "http://main.invalid") // this till is now a replica
+	if _, err := r.event("ui.action.ask", lbAsk("logbook.entry", "log_save", map[string]any{
+		"staff": staff, "payment": "cash", "desc_0": "Cut", "amount_0": map[string]any{"minor": 2500}, "tip": map[string]any{"minor": 300}})); err != nil {
+		t.Fatal(err)
+	}
+	ent := r.rows(`SELECT id, fwd_state, total_minor FROM entries`)
+	if len(ent) != 1 {
+		t.Skip("entry not created: the running core's shop.context.v2 has no business_date yet (ut-docs#7231)")
+	}
+	id := ent[0]["id"].(string)
+	if ent[0]["fwd_state"] != "queued" || ent[0]["total_minor"] != float64(2500) {
+		t.Fatalf("entry = %v", ent[0])
+	}
+	count := func() (n int) {
+		if err := r.d.DB.QueryRow(`SELECT COUNT(*) FROM plugin_record_outbox WHERE plugin_id = ? AND record_id = ?`, logbookID, id).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	if n := count(); n != 1 {
+		t.Fatalf("outbox rows = %d", n)
+	}
+	_, _ = r.event(logbookID+".maintenance.tick", map[string]any{})
+	if n := count(); n != 1 {
+		t.Fatalf("outbox rows after the maintenance retry = %d", n)
+	}
+}

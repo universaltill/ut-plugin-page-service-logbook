@@ -353,7 +353,7 @@ func TestEditKeepsBusinessDateAndCurrency(t *testing.T) {
 	e := newEnv(t, "GB")
 	st := mustStaff(t, e, "Ann")
 	en, _ := e.s.CreateFree(ann, free(st.ID, 1000, 0))
-	e.f.SetView("shop.context.v2", []map[string]any{{"currency_code": "EUR", "decimals": 2, "locale": "en",
+	e.f.SetView("shop.context.v2", []map[string]any{{"currency_code": "EUR", "currency_decimals": 2, "locale": "en",
 		"country": "GB", "business_date": "2026-11-28"}})
 	ed, err := e.s.Edit(ann, en.ID, free(st.ID, 2000, 0))
 	if err != nil {

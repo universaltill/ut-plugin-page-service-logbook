@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Manifest sanity for the Service Staff Logbook WASM plugin (ADR-0149):
-# marketplace-required fields, ABI 3 + plugin SQLite, the exact permission
+# marketplace-required fields, ABI 2 + plugin SQLite + retention, the exact permission
 # set (least privilege), views_used vs the permissions that open them, hooks
 # vs src/app, the migrations, and every key the manifest names.
 set -euo pipefail
@@ -15,20 +15,22 @@ for f in ("name", "version", "description"):
 if not re.match(r'^\d+\.\d+\.\d+', m.get("version", "")): errs.append("bad version")
 if m.get("canonical_type") != "page": errs.append("canonical_type must be 'page' (ADR-0002)")
 if m.get("runtime") != "wasm": errs.append("runtime must be 'wasm' (ADR-0001)")
-if m.get("wasm_abi") != 3: errs.append("wasm_abi must be 3")
+if m.get("wasm_abi") != 2: errs.append("wasm_abi must be 2 (owner order 2026-11-28: ship on ABI 2, never ABI 3)")
 if m.get("device_arch") != "any": errs.append("device_arch must be 'any'")
 ep = (m.get("entrypoint") or "").lstrip("./")
 if not ep.endswith(".wasm"): errs.append("wasm runtime needs a .wasm entrypoint")
 elif not os.path.isfile(ep): errs.append(f"module not found: {ep} (run scripts/build.sh)")
 want_perms = {"events:receive","db:own","ui:page","ui:slot:admin.pages","ui:slot:reports.panels","view:inventory",
-              "view:users","view:sales","view:shop","records:sync","payout:suggest","schedule"}
+              "view:users","view:sales","view:shop","records:sync","schedule"}
 perms = set(m.get("permissions", []))
 if perms != want_perms:
     errs.append(f"permissions must be exactly the reviewed set; extra={sorted(perms-want_perms)} missing={sorted(want_perms-perms)}")
 for p in perms:
     if p.startswith(("net:", "tcp:", "http", "write:", "ledger:")) or p.endswith(":write"):
         errs.append(f"no egress or core-write permission allowed: {p}")
-if "retention" in m: errs.append("no retention.keep_years: a GB delete must stay possible (ADR-0149 §4)")
+ret = m.get("retention") or {}
+if not isinstance(ret.get("keep_years"), int) or ret["keep_years"] < 1: errs.append("retention.keep_years must be >= 1 (uninstall keeps the logbook; keep_years > 0 makes the host open the DB synchronous=FULL, #7230 R9). The in-plugin GB delete is unaffected (ADR-0149 §4)")
+if ret.get("reason_key") != "service_logbook.retention.reason": errs.append("retention.reason_key must be service_logbook.retention.reason")
 views = {"catalog.items.v1": "view:inventory", "users.list.v1": "view:users", "sales.receipts.v1": "view:sales", "shop.context.v2": "view:shop"}
 if set(m.get("views_used", [])) != set(views): errs.append("views_used must be exactly " + ", ".join(sorted(views)))
 for v, p in views.items():
@@ -47,11 +49,11 @@ for k in ("collections", "snapshots"):
     if len(rf.get(k, [])) > 8: errs.append(f"records_forward.{k}: at most 8")
 hooks = {h.get("event") for h in m.get("hooks", [])}
 src = "".join(open(f).read() for f in glob.glob("src/app/*.go") if not f.endswith("_test.go"))
-for ev in ("ui.view.ask", "ui.action.ask", "plugin.records.received.ask", "export.requested.ask", "tips.suggest.ask", m["id"] + ".maintenance.tick"):
+for ev in ("ui.view.ask", "ui.action.ask", "plugin.records.received.ask", "export.requested.ask", m["id"] + ".maintenance.tick"):
     if ev not in hooks: errs.append(f"missing hook {ev}")
 for h in hooks:
     if h.startswith(m["id"] + ".") and not re.match(r'^[a-z0-9_-]+(\.[a-z0-9_-]+)+$', h): errs.append(f"job event {h} must be lower-case dotted segments")
-    if h.split(".")[0] not in ("ui", "plugin", "export", "tips", "com") : errs.append(f"unexpected hook {h}")
+    if h.split(".")[0] not in ("ui", "plugin", "export", "com") : errs.append(f"unexpected hook {h}")
 for s in m.get("schedules", []):
     if s.get("event") not in hooks: errs.append(f"schedule {s.get('event')} has no hook")
 en = json.load(open("locales/en.json"))

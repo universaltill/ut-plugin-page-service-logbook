@@ -5,14 +5,19 @@ a logbook of **who did which service, the tips they got, and what they took in
 cash and card**. Staff do not need a till login. ADR-0149, epic
 universaltill/ut-docs#3691.
 
-> **Status: cannot run yet.** The plugin needs the plugin-SQLite host
-> functions (universaltill/ut-docs#3157 slice B: `db_exec`, `db_query`,
-> `db:own`, manifest `db.migrations`) and the core plugin-records channel
-> (universaltill/ut-docs#3697). Neither is released. All domain code is built
-> and tested natively against ports (`src/host`); the real binding in
-> `src/host/wasm.go` fails closed (`ErrUnavailable`) until then.
-> `min_pos_version` in `manifest.json` is a placeholder (`0.40.0`) that must be
-> raised to the first till release holding all of that.
+> **Status: wired to the real till host (ABI 2), not published.** The
+> plugin uses the plugin-SQLite host functions (`db_exec` / `db_query`,
+> permission `db:own`, migrations in `db/migrations`, universal-till #2794)
+> and the plugin-records channel (`records_forward`, snapshots, universal-till
+> #2783) through the official Go guest SDK (`src/host/wasm.go`). A real-host
+> test runs the built `plugin.wasm` in a universal-till checkout:
+> `scripts/realhost-test.sh <universal-till checkout>`.
+> **Still open in core:** `shop.context.v2` must gain `country` and
+> `business_date` (ut-docs#7231), and the tips seam (#7108, permission and
+> `tips.suggest.ask` hook are left out of the manifest until it lands).
+> `min_pos_version` (`0.40.0`) is a placeholder to raise to the first till
+> release holding all of that. Uninstalling keeps the data for
+> `retention.keep_years` (10) and opens the DB `synchronous=FULL`.
 >
 > **Not published.** The release workflows are gated on the repo variable
 > `PUBLISH_ENABLED == 'true'` (unset by default): a merge cuts no tag and

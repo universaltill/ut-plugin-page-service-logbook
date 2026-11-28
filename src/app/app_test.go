@@ -21,7 +21,7 @@ type rig struct {
 
 func newRig(t *testing.T, country string) rig {
 	f := hosttest.New(t)
-	f.SetView("shop.context.v2", []map[string]any{{"currency_code": "GBP", "decimals": 2, "locale": "en", "country": country, "business_date": "2026-11-27"}})
+	f.SetView("shop.context.v2", []map[string]any{{"currency_code": "GBP", "currency_decimals": 2, "locale": "en", "country": country, "business_date": "2026-11-27"}})
 	f.SetView("users.list.v1", []map[string]any{{"id": "u1", "display_name": "Ann", "active": true}})
 	f.SetView("catalog.items.v1", []map[string]any{
 		{"id": "i1", "name": "Cut", "category_id": "c1", "category": "Hair", "price_minor": 2500, "active": true},

@@ -149,6 +149,7 @@
   "service_logbook.reports.tile.tips": "Tips",
   "service_logbook.reports.title": "Staff logbook: reports",
   "service_logbook.reports.to": "To (YYYY-MM-DD)",
+  "service_logbook.retention.reason": "The logbook holds staff tips and takings that tax and tip-record rules require you to keep for years. If you uninstall it, the data is kept (not shown) until that period ends.",
   "service_logbook.staff.former": "Former staff #%d",
   "service_logbook.staff.status.active": "Active",
   "service_logbook.staff.status.archived": "Archived",

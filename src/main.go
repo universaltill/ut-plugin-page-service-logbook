@@ -4,8 +4,9 @@
 // GOOS=wasip1 GOARCH=wasm (scripts/build.sh). The logic lives in src/store
 // and src/app, unit-tested natively on an in-memory host (src/hosttest).
 //
-// The plugin cannot run until #3157 slice B (plugin SQLite host functions)
-// and the #3697 records channel exist; src/host/wasm.go fails closed until then.
+// src/host/wasm.go binds the real till (ABI 2): plugin SQLite, read views and
+// the plugin-records channel. scripts/realhost-test.sh runs the built module
+// against the real host.
 package main
 
 import (

@@ -99,7 +99,7 @@ func TestGBAdminRemovesArchivedMember(t *testing.T) {
 	r := newRig(t, "FR")
 	st := r.staff(t, "Ann")
 	_, _ = r.a.S.RemoveStaff(st.ID, store.RemoveInput{})
-	r.f.SetView("shop.context.v2", []map[string]any{{"currency_code": "GBP", "decimals": 2, "locale": "en", "country": "GB", "business_date": "2026-11-27"}})
+	r.f.SetView("shop.context.v2", []map[string]any{{"currency_code": "GBP", "currency_decimals": 2, "locale": "en", "country": "GB", "business_date": "2026-11-27"}})
 	d := docOf(t)(r.a.Action(ask(app.ViewAdmin, "staff_remove", mgr, map[string]any{"staff": st.ID})))
 	if !strings.Contains(text(d), "remove.gb_warning") {
 		t.Fatalf("%s", text(d))

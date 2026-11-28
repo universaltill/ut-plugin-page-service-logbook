@@ -1,8 +1,7 @@
 // Package host is the plugin's port layer: every capability the domain code
 // needs from the till is an interface here, so src/store, src/views and
-// src/app are tested natively (src/hosttest) before the plugin SQLite host
-// functions (#3157 slice B) and the records channel SDK (#3697) exist. The
-// only file that binds to the real host is wasm.go (wasip1).
+// src/app are tested natively (src/hosttest). The only file that binds to the
+// real host is wasm.go (wasip1).
 package host
 
 import (
@@ -62,6 +61,6 @@ type Host interface {
 	IDs() IDs
 }
 
-// ErrUnavailable is returned by a capability the running till does not offer
-// yet (e.g. DB before #3157 slice B). Callers fail closed.
+// ErrUnavailable is returned by the native (non-wasm) binding, which has no
+// host. Callers fail closed.
 var ErrUnavailable = errors.New("host capability unavailable")

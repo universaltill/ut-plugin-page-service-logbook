@@ -33,7 +33,7 @@ func New(h host.Host) *Store { return &Store{h: h} }
 // ShopCtx is the part of shop.context.v2 the logbook needs (view:shop).
 type ShopCtx struct {
 	Currency     string `json:"currency_code"`
-	Decimals     int    `json:"decimals"`
+	Decimals     int    `json:"currency_decimals"`
 	Locale       string `json:"locale"`
 	Country      string `json:"country"`
 	BusinessDate string `json:"business_date"`

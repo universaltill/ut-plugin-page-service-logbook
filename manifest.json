@@ -1,17 +1,19 @@
 {
   "id": "com.universaltill.service-logbook",
   "name": "Service Staff Logbook",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A logbook of the services each staff member does, the tips they get and what they took in cash and card, for hairdressers, nail bars, barbers and other service shops. Staff do not need a till login. Money is typed in or, where your country requires it, linked to a signed till sale. Works offline; a second till sends its entries to the main till when it can. Nothing is installed or switched on by default.",
   "author": "Universal Till",
   "website": "https://universaltill.com",
   "canonical_type": "page",
   "runtime": "wasm",
-  "wasm_abi": 3,
+  "wasm_abi": 2,
   "entrypoint": "./bin/plugin.wasm",
   "device_arch": "any",
   "min_pos_version": "0.40.0",
-  "shop_types": ["service"],
+  "shop_types": [
+    "service"
+  ],
   "permissions": [
     "events:receive",
     "db:own",
@@ -23,7 +25,6 @@
     "view:sales",
     "view:shop",
     "records:sync",
-    "payout:suggest",
     "schedule"
   ],
   "views_used": [
@@ -35,14 +36,23 @@
   "db": {
     "migrations": "db/migrations"
   },
+  "retention": {
+    "keep_years": 10,
+    "reason_key": "service_logbook.retention.reason"
+  },
   "limits": {
     "memory_mb": 64,
     "storage_mb": 50,
     "long_call_s": 30
   },
   "records_forward": {
-    "collections": ["entries"],
-    "snapshots": ["staff", "config"]
+    "collections": [
+      "entries"
+    ],
+    "snapshots": [
+      "staff",
+      "config"
+    ]
   },
   "schedules": [
     {
@@ -52,12 +62,26 @@
     }
   ],
   "hooks": [
-    { "event": "ui.view.ask", "action": "view" },
-    { "event": "ui.action.ask", "action": "view" },
-    { "event": "plugin.records.received.ask", "action": "records.apply" },
-    { "event": "com.universaltill.service-logbook.maintenance.tick", "action": "maintenance" },
-    { "event": "export.requested.ask", "action": "export" },
-    { "event": "tips.suggest.ask", "action": "tips" }
+    {
+      "event": "ui.view.ask",
+      "action": "view"
+    },
+    {
+      "event": "ui.action.ask",
+      "action": "view"
+    },
+    {
+      "event": "plugin.records.received.ask",
+      "action": "records.apply"
+    },
+    {
+      "event": "com.universaltill.service-logbook.maintenance.tick",
+      "action": "maintenance"
+    },
+    {
+      "event": "export.requested.ask",
+      "action": "export"
+    }
   ],
   "entries": [
     {
@@ -101,5 +125,7 @@
       "label": "service_logbook.export.entries"
     }
   ],
-  "locales": ["en-US"]
+  "locales": [
+    "en-US"
+  ]
 }

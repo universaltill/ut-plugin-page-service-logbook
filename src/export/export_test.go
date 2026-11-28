@@ -14,7 +14,7 @@ import (
 
 func setup(t *testing.T) (*store.Store, *hosttest.Fake) {
 	f := hosttest.New(t)
-	f.SetView("shop.context.v2", []map[string]any{{"currency_code": "GBP", "decimals": 2, "locale": "en", "country": "FR", "business_date": "2026-11-27"}})
+	f.SetView("shop.context.v2", []map[string]any{{"currency_code": "GBP", "currency_decimals": 2, "locale": "en", "country": "FR", "business_date": "2026-11-27"}})
 	return store.New(f), f
 }
 
