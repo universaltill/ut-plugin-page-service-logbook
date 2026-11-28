@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -233,6 +234,12 @@ func (r fakeRecords) Status(string) ([]host.RecordStatus, error) {
 	var out []host.RecordStatus
 	for _, s := range r.f.Status {
 		out = append(out, s)
+	}
+	// the host answers oldest first and at most StatusLimit rows (ids stand
+	// in for age here)
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	if len(out) > host.StatusLimit {
+		out = out[:host.StatusLimit]
 	}
 	return out, nil
 }

@@ -26,6 +26,11 @@ type Views interface {
 	Query(name string, args any) (json.RawMessage, error)
 }
 
+// StatusLimit is the most rows records_status answers (oldest first): a
+// longer outbox is cut, so an id missing from a full answer may still be
+// pending.
+const StatusLimit = 200
+
 // RecordStatus is one outbox row of this plugin as core reports it.
 type RecordStatus struct {
 	ID       string `json:"id"`

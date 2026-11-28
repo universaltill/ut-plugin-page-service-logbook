@@ -421,3 +421,38 @@ func TestCanChange(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// records_status answers at most 200 rows (oldest first). With a full answer
+// an id missing from it may still be undelivered, so it is never trimmed;
+// only rows the answer lists as rejected are settled (fix-plug finding 9).
+func TestTrimReplicaFullStatusAnswerTrustsNoAbsence(t *testing.T) {
+	r, sts := newReplica(t, "GB", nil, "Ann")
+	queued, _ := r.s.CreateFree(ann, free(sts[0].ID, 100, 0))
+	rej, _ := r.s.CreateFree(ann, free(sts[0].ID, 100, 0))
+	_, _ = r.f.DB().Exec("UPDATE entries SET created_at = '2026-10-18T09:00:00Z' WHERE id IN (?, ?)", queued.ID, rej.ID)
+	for i := 0; i < host.StatusLimit; i++ {
+		id := fmt.Sprintf("0-older-%03d", i) // sorts before the entry ids: inside the answer
+		r.f.Status[id] = host.RecordStatus{ID: id, Status: "pending"}
+	}
+	r.f.Status[rej.ID] = host.RecordStatus{ID: rej.ID, Status: "rejected"} // past the 200: not answered
+	r.f.Time = time.Date(2026, 11, 27, 9, 0, 0, 0, time.UTC)
+	r.s.BeginEvent()
+	r.s.TrimReplica()
+	if _, err := r.s.GetEntry(queued.ID); err != nil {
+		t.Fatalf("a row missing from a full status answer was trimmed: %v", err)
+	}
+	if _, err := r.s.GetEntry(rej.ID); err != nil {
+		t.Fatalf("a row past the answer was trimmed: %v", err)
+	}
+	// a rejected row inside a full answer is settled and goes
+	delete(r.f.Status, "0-older-000")
+	r.f.Status["0-rej"] = host.RecordStatus{ID: rej.ID, Status: "rejected"}
+	r.s.BeginEvent()
+	r.s.TrimReplica()
+	if _, err := r.s.GetEntry(rej.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("rejected row in the answer kept: %v", err)
+	}
+	if _, err := r.s.GetEntry(queued.ID); err != nil {
+		t.Fatalf("queued row trimmed: %v", err)
+	}
+}

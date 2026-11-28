@@ -3,6 +3,8 @@ package store
 import (
 	"sort"
 	"time"
+
+	"github.com/universaltill/ut-plugin-page-service-logbook/src/host"
 )
 
 // Wire is the forwarded payload of one entry (<= 64 KiB: <= 50 lines, field
@@ -108,7 +110,7 @@ const replicaKeepDays = 35
 // on the main). Undelivered rows are never trimmed. A trimmed row takes the
 // settled rows it supersedes with it, so no older row becomes current again.
 // Nothing is trimmed when the role, the outbox status or the snapshot cannot
-// be read. Returns the number of entries removed.
+// be read, and a row absent from a full (cut) status answer is kept. Returns the number of entries removed.
 func (s *Store) TrimReplica() int {
 	if role, err := s.Role(); err != nil || role != "replica" {
 		return 0
@@ -117,9 +119,15 @@ func (s *Store) TrimReplica() int {
 	if err != nil {
 		return 0
 	}
-	open := map[string]bool{}
+	// A missing id means delivered, unless the answer is full: the host cuts
+	// it at host.StatusLimit rows (oldest first), so then only the rows it
+	// lists as rejected are known to be settled.
+	full := len(sts) >= host.StatusLimit
+	open, rejected := map[string]bool{}, map[string]bool{}
 	for _, st := range sts {
-		if st.Status != "rejected" {
+		if st.Status == "rejected" {
+			rejected[st.ID] = true
+		} else {
 			open[st.ID] = true
 		}
 	}
@@ -140,7 +148,7 @@ func (s *Store) TrimReplica() int {
 	doomed := map[string]bool{}
 	for _, r := range rows {
 		id := str(r, "id")
-		if open[id] {
+		if open[id] || (full && !rejected[id]) {
 			continue
 		}
 		settled[id] = str(r, "supersedes_id")
