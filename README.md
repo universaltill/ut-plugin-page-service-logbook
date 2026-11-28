@@ -12,9 +12,9 @@ universaltill/ut-docs#3691.
 > #2783) through the official Go guest SDK (`src/host/wasm.go`). A real-host
 > test runs the built `plugin.wasm` in a universal-till checkout:
 > `scripts/realhost-test.sh <universal-till checkout>`.
-> **Still open in core:** `shop.context.v2` must gain `country` and
-> `business_date` (ut-docs#7231), and the tips seam (#7108, permission and
-> `tips.suggest.ask` hook are left out of the manifest until it lands).
+> `shop.context.v2` country and `business_date` (ut-docs#7231) and the tips
+> seam (#7108: permission `payout:suggest`, hook `tips.suggest.ask`) are on
+> till main and wired here.
 > `min_pos_version` (`0.40.0`) is a placeholder to raise to the first till
 > release holding all of that. Uninstalling keeps the data for
 > `retention.keep_years` (10) and opens the DB `synchronous=FULL`.
@@ -37,7 +37,7 @@ universaltill/ut-docs#3691.
 | #3703 | replica tills forward entries to the main till |
 | #3704 | per-staff reports panel and CSV exports |
 | #3705 | month/year comparisons and logbook-vs-till reconciliation |
-| #7108 | tips pre-fill: the plugin half (`tips.suggest.ask`) |
+| #7108 | tips pre-fill: the plugin half (`tips.suggest.ask`, permission `payout:suggest`) |
 
 * **Delete rule (ADR-0149 §4).** Country `GB`: the person and all their entries
   are erased after a typed-name confirmation. Any other or unknown country:

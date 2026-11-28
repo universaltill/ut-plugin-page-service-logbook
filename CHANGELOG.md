@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.3.0 (unreleased)
+
+- Tips pre-fill is wired (ut-docs#7108, universal-till#2798): permission
+  `payout:suggest` and the `tips.suggest.ask` hook are back in the manifest;
+  the real host accepts them (realhost test).
+- **IDs:** the till's WASI random source is deterministic (wazero default), so
+  every event drew the same UUIDs and the second staff member or entry failed
+  on the primary key. IDs now mix the wall clock and a sequence into the random
+  bytes (found by the real-host test).
+- ut-docs#7269: the sale's tip is claimed by the entry INSERT itself
+  (`INSERT ... SELECT ... WHERE NOT EXISTS`, one statement), so two forwarded
+  entries of one sale that carry different lines cannot both count the tip.
+- Real-host tests for country-aware delete, business day from core, replica
+  rejection feedback, the tip guard under concurrent applies, the tips answer.
+
 ## 0.2.0 (unreleased)
 
 Wired to the real host on ABI 2: `src/host/wasm.go` binds `db_exec` /

@@ -80,12 +80,25 @@ func (s *Store) Apply(fromTill string, w Wire) *ApplyError {
 			return &ApplyError{true, "db"}
 		}
 	}
-	if _, err := db.Exec(`INSERT OR IGNORE INTO entries (id, origin_till_id, author_user_id, staff_id, business_date, currency,
-		payment_type, total_minor, tip_minor, sale_ref, supersedes_id, voided, shadowed, fwd_state, mode, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'na', ?, ?)`, e.ID, fromTill, e.Author, nullable(e.StaffID),
-		e.BusinessDate, e.Currency, e.Payment, e.TotalMinor, e.TipMinor, nullable(e.SaleRef), nullable(e.SupersedesID),
-		b2i(e.Voided), e.Mode, e.CreatedAt); err != nil {
+	ie := Entry{SaleRef: e.SaleRef, TipMinor: e.TipMinor, SupersedesID: e.SupersedesID, Voided: e.Voided}
+	q, args := entryInsert("INSERT OR IGNORE", insertCols, "?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'na', ?, ?", ie, []any{e.ID, fromTill,
+		e.Author, nullable(e.StaffID), e.BusinessDate, e.Currency, e.Payment, e.TotalMinor, e.TipMinor, nullable(e.SaleRef),
+		nullable(e.SupersedesID), b2i(e.Voided), e.Mode, e.CreatedAt})
+	n, err := db.Exec(q, args...)
+	if err != nil {
 		return &ApplyError{true, "db"}
+	}
+	if n == 0 {
+		// OR IGNORE skips a duplicate id (a redelivery: success) or, for a
+		// new tip link, the tip guard (the sale's tip is already counted).
+		// A failed read is no verdict: retry, never a terminal refusal.
+		if _, gerr := s.GetEntry(e.ID); gerr == nil {
+			return nil
+		} else if gerr != ErrNotFound {
+			return &ApplyError{true, "db"}
+		}
+		_, _ = db.Exec(sqlDropUncommittedLines, e.ID)
+		return &ApplyError{false, "already_linked"}
 	}
 	if e.SupersedesID != "" {
 		if err := s.resolveConflict(e.SupersedesID); err != nil {

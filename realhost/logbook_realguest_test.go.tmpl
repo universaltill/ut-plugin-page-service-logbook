@@ -13,10 +13,13 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -25,6 +28,8 @@ import (
 	"github.com/universaltill/universal-till/internal/db/plugindb"
 	"github.com/universaltill/universal-till/internal/paths"
 )
+
+var lbSeq atomic.Int64
 
 const logbookID = "com.universaltill.service-logbook"
 
@@ -51,7 +56,7 @@ func (r *lbRig) event(typ string, payload any) (json.RawMessage, error) {
 	r.w.mu.Lock()
 	r.w.db = r.d.DB
 	r.w.mu.Unlock()
-	return r.w.HandleEvent(context.Background(), logbookID, Event{ID: "ev-" + typ, Type: typ, Timestamp: time.Now(), Payload: body})
+	return r.w.HandleEvent(context.Background(), logbookID, Event{ID: fmt.Sprintf("ev-%s-%d", typ, lbSeq.Add(1)), Type: typ, Timestamp: time.Now(), Payload: body})
 }
 
 func (r *lbRig) rows(q string) []map[string]any {
@@ -142,6 +147,14 @@ func newLogbookRig(t *testing.T) *lbRig {
 	if up, err := migrateDataWith(context.Background(), DataManager(), m, codeD, ""); err != nil || up == nil {
 		t.Fatalf("migrate (real data manager): %v %v", up, err)
 	}
+
+	// the real shop.context.v2 reads store.country and the business day from
+	// settings itself; only the currency/locale provider is the pages
+	// package's (internal/pages), so supply that one.
+	prevCtx := data.SetCoreViewShopContext(func(context.Context, *sql.DB) (data.ShopContextRow, error) {
+		return data.ShopContextRow{CurrencyCode: "GBP", CurrencyDecimals: 2, Locale: "en"}, nil
+	})
+	t.Cleanup(func() { data.SetCoreViewShopContext(prevCtx) })
 
 	w := NewWasmRuntime(t.TempDir())
 	t.Cleanup(func() { w.Close(context.Background()) })
@@ -260,5 +273,227 @@ func TestLogbookRealGuest_ReplicaForward(t *testing.T) {
 	_, _ = r.event(logbookID+".maintenance.tick", map[string]any{})
 	if n := count(); n != 1 {
 		t.Fatalf("outbox rows after the maintenance retry = %d", n)
+	}
+}
+
+// --- wire2 (logbook2): country, business day, rejection, tip guard, tips ---
+
+func (r *lbRig) addStaff(name, user string) string {
+	r.t.Helper()
+	out, err := r.event("ui.action.ask", lbAsk("logbook.admin", "staff_add", map[string]any{"name": name, "user": user}))
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	_ = out
+	rows := r.rows(`SELECT id FROM staff WHERE display_name = '` + name + `'`)
+	if len(rows) != 1 {
+		r.t.Fatalf("staff %s: %v all=%v", name, rows, r.rows(`SELECT display_name, status FROM staff`))
+	}
+	return rows[0]["id"].(string)
+}
+
+func (r *lbRig) logFree(staff string, amount, tip int) {
+	r.t.Helper()
+	if _, err := r.event("ui.action.ask", lbAsk("logbook.entry", "log_save", map[string]any{
+		"staff": staff, "payment": "cash", "desc_0": "Cut", "amount_0": map[string]any{"minor": amount}, "tip": map[string]any{"minor": tip}})); err != nil {
+		r.t.Fatal(err)
+	}
+}
+
+// #3700 delete rule + #3701 country: the REAL shop.context.v2 country
+// (store.country) decides. GB hard-deletes the member and their entries
+// (typed-name confirmation); DE archives, pseudonymises and keeps the amounts;
+// an unset country fails closed to archive.
+func TestLogbookRealGuest_CountryAwareDelete(t *testing.T) {
+	for _, c := range []struct {
+		country string
+		deleted bool
+	}{{"GB", true}, {"DE", false}, {"", false}} {
+		t.Run("country="+c.country, func(t *testing.T) {
+			r := newLogbookRig(t)
+			r.setting("store.country", "GB") // free entry is allowed here (DE/TR force linked)
+			id := r.addStaff("Ann", "")
+			r.logFree(id, 2500, 300)
+			r.setting("store.country", c.country)
+			if n := len(r.rows(`SELECT id FROM entries`)); n != 1 {
+				t.Fatalf("entry not created (shop.context.v2 business_date): %d", n)
+			}
+			if _, err := r.event("ui.action.ask", lbAsk("logbook.admin", "staff_remove_confirm", map[string]any{"staff": id, "typed_name": "Ann", "exported": true})); err != nil {
+				t.Fatal(err)
+			}
+			st := r.rows(`SELECT display_name, status FROM staff`)
+			ent := r.rows(`SELECT total_minor FROM entries`)
+			if c.deleted {
+				if len(st) != 0 || len(ent) != 0 {
+					t.Fatalf("GB must hard delete the member and their entries: %v %v", st, ent)
+				}
+				return
+			}
+			if len(st) != 1 || st[0]["status"] != "archived" {
+				t.Fatalf("outside GB the member is archived: %v", st)
+			}
+			if len(ent) != 1 || ent[0]["total_minor"] != float64(2500) {
+				t.Fatalf("outside GB the amounts stay: %v", ent)
+			}
+		})
+	}
+}
+
+// #3701 day list: an entry takes core's business_date (shop.context.v2), which
+// follows reports.business_day_start, not the calendar day. Run once with the
+// day starting at 00:00 (today) and once at 23:59 (yesterday until then).
+func TestLogbookRealGuest_BusinessDayFromCore(t *testing.T) {
+	now := time.Now()
+	if now.Hour() == 23 && now.Minute() == 59 {
+		t.Skip("within the minute before midnight the two cases coincide")
+	}
+	for _, c := range []struct{ start, want string }{
+		{"00:00", now.Format("2006-01-02")},
+		{"23:59", now.AddDate(0, 0, -1).Format("2006-01-02")},
+	} {
+		r := newLogbookRig(t)
+			r.setting("reports.business_day_start", c.start)
+		id := r.addStaff("Ann", "")
+		r.logFree(id, 1000, 0)
+		got := r.rows(`SELECT business_date FROM entries`)
+		if len(got) != 1 || got[0]["business_date"] != c.want {
+			t.Fatalf("business_day_start %s: business_date = %v, want %s", c.start, got, c.want)
+		}
+	}
+}
+
+// #3703 rejection feedback: a record core marks rejected in its outbox shows
+// on the replica's day list as "Not accepted by the main till".
+func TestLogbookRealGuest_ReplicaShowsRejected(t *testing.T) {
+	r := newLogbookRig(t)
+	id := r.addStaff("Ann", "")
+	r.setting("sync.primary_url", "http://main.invalid") // replica now
+	// the replica's staff list is the admin-pull snapshot: seed it as core does
+	snap, _ := json.Marshal(map[string]any{"staff": []map[string]any{{"id": id, "display_name": "Ann", "colour": "", "linked_user_id": ""}}})
+	if _, err := data.NewPluginRecordsRepo(r.d.DB).SnapshotSet(context.Background(), logbookID, "staff", snap, time.Now().UTC()); err != nil {
+		t.Fatalf("seed the staff snapshot: %v", err)
+	}
+	r.logFree(id, 2500, 0)
+	ent := r.rows(`SELECT id FROM entries`)
+	if len(ent) != 1 {
+		t.Fatalf("replica entry not created: %v", ent)
+	}
+	view := func() string {
+		out, err := r.event("ui.view.ask", lbAsk("logbook.entry", "", nil))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(out)
+	}
+	if v := view(); !strings.Contains(v, "Waiting") && !strings.Contains(v, "main till") {
+		t.Logf("pending chip text not asserted: %.200s", v)
+	}
+	if _, err := r.d.DB.Exec(`UPDATE plugin_record_outbox SET status = 'rejected', reason = 'invalid', rejected_at = datetime('now') WHERE plugin_id = ? AND record_id = ?`,
+		logbookID, ent[0]["id"]); err != nil {
+		t.Fatal(err)
+	}
+	if v := view(); !strings.Contains(v, "Not accepted by the main till") {
+		t.Fatalf("the rejected entry must show on the replica: %.400s", v)
+	}
+}
+
+func lbWire(id, staff, sale string, total, tip int, lineNo int) map[string]any {
+	return map[string]any{
+		"entry": map[string]any{"id": id, "author_user_id": "u1", "staff_id": staff, "business_date": "2026-11-27", "currency": "GBP",
+			"payment_type": "cash", "total_minor": total, "tip_minor": tip, "sale_ref": sale, "supersedes_id": "", "voided": false,
+			"mode": "linked", "created_at": "2026-11-27T10:00:00Z"},
+		"lines": []map[string]any{{"line_no": lineNo, "item_id": "", "name": "Cut", "qty": 1, "amount_minor": total, "description": "", "staff_id": staff}},
+	}
+}
+
+// ut-docs#7269: two tills forward different lines of ONE sale, both carrying
+// the sale's tip, at the same time (the host runs a plugin's events
+// concurrently). The guarded INSERT ... WHERE NOT EXISTS means the tip is
+// stored once per sale, whatever the interleaving.
+func TestLogbookRealGuest_TipCountedOnceUnderConcurrentApply(t *testing.T) {
+	r := newLogbookRig(t)
+	id := r.addStaff("Ann", "")
+	const sales = 12
+	var wg sync.WaitGroup
+	for i := 0; i < sales; i++ {
+		sale := "sale-" + string(rune('a'+i))
+		for k, till := range []string{"till-b", "till-c"} {
+			wg.Add(1)
+			go func(k int, till string) {
+				defer wg.Done()
+				w := lbWire(sale+"-"+till, id, sale, 1000, 300, k+1)
+				_, _ = r.event("plugin.records.received.ask", map[string]any{"collection": "entries", "from_till_id": till, "payload": w})
+			}(k, till)
+		}
+	}
+	wg.Wait()
+	rows := r.rows(`SELECT sale_ref, SUM(tip_minor) AS tip, COUNT(*) AS n FROM entries GROUP BY sale_ref`)
+	if len(rows) != sales {
+		t.Fatalf("sales stored: %d, want %d", len(rows), sales)
+	}
+	for _, row := range rows {
+		if row["tip"] != float64(300) {
+			t.Fatalf("tip must be counted once per sale: %v", row)
+		}
+	}
+}
+
+// #7108 plugin half: the real host accepts the manifest with payout:suggest,
+// and core's real AskPermitted reaches the real module only because the
+// permission was declared AND granted; the answer maps the staff member's
+// linked till user and lists an unlinked member as unmapped.
+func TestLogbookRealGuest_TipsSuggestAnswer(t *testing.T) {
+	r := newLogbookRig(t)
+	if _, err := r.d.DB.Exec(`INSERT INTO users(id, username, display_name, role, pin_hash, is_active) VALUES ('uv-1', 'sam', 'Sam', 'cashier', 'x', 1)`); err != nil {
+		t.Fatal(err)
+	}
+	ann := r.addStaff("Ann", "uv-1")
+	bob := r.addStaff("Bob", "")
+	r.logFree(ann, 2000, 300)
+	r.logFree(bob, 1000, 150)
+
+	if err := PersistManifest(context.Background(), r.d.DB, r.m, InstallOptions{}); err != nil {
+		t.Fatalf("the host refuses to persist the manifest (hooks/permissions): %v", err)
+	}
+	for _, p := range r.m.Permissions {
+		if err := GrantPermission(context.Background(), r.d.DB, logbookID, p); err != nil {
+			t.Fatalf("grant %s: %v", p, err)
+		}
+	}
+	bus := NewEventBus(r.d.DB)
+	bus.SetEventMode("tips.suggest.ask", Blocking)
+	if _, err := bus.SubscribeWithHandler(context.Background(), logbookID, []string{"tips.suggest.ask"}, func(_ context.Context, ev Event) (json.RawMessage, error) {
+		return r.w.HandleEvent(context.Background(), logbookID, ev)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	day := time.Now().Format("2006-01-02")
+	resp, ok, err := bus.AskPermitted(context.Background(), "tips.suggest.ask", "payout:suggest", map[string]any{"from": day, "to": day})
+	if err != nil || !ok {
+		t.Fatalf("AskPermitted ok=%v err=%v resp=%s", ok, err, resp)
+	}
+	var ans struct {
+		Suggestions []struct {
+			UserID      string `json:"user_id"`
+			AmountMinor int64  `json:"amount_minor"`
+		} `json:"suggestions"`
+		Unmapped []struct {
+			Label       string `json:"label"`
+			AmountMinor int64  `json:"amount_minor"`
+		} `json:"unmapped"`
+	}
+	if err := json.Unmarshal(resp, &ans); err != nil {
+		t.Fatalf("answer %s: %v", resp, err)
+	}
+	if len(ans.Suggestions) != 1 || ans.Suggestions[0].UserID != "uv-1" || ans.Suggestions[0].AmountMinor != 300 ||
+		len(ans.Unmapped) != 1 || ans.Unmapped[0].Label != "Bob" || ans.Unmapped[0].AmountMinor != 150 {
+		t.Fatalf("answer = %s", resp)
+	}
+	// without the grant the module is never asked
+	if err := data.NewPluginRepo(r.d.DB).SetPermission(context.Background(), logbookID, "payout:suggest", false); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, _ := bus.AskPermitted(context.Background(), "tips.suggest.ask", "payout:suggest", map[string]any{"from": day, "to": day}); ok {
+		t.Fatal("a revoked payout:suggest must not be asked")
 	}
 }
