@@ -82,12 +82,20 @@ func (s *Store) RetryPending() int {
 	return len(rows)
 }
 
+// orphanAge is how old a parent-less line must be before the sweep removes
+// it. An entry write takes milliseconds; an hour is far past any write in
+// flight (the event deadline is 10 s).
+const orphanAge = time.Hour
+
 // SweepOrphans deletes lines whose entry row never landed (a crash between
-// the line writes and the commit-point write). It assumes the host runs one
-// event at a time per plugin, so a sweep never overlaps a write; confirm that
-// when #3157 slice B lands (open item, notes/04-dev-plugin.md).
+// the line writes and the commit-point write). The host runs events of one
+// plugin concurrently, so a parent-less line may belong to an entry being
+// written right now: only lines older than orphanAge are removed (created_at,
+// migration 0002; a line from before 0002 has none and is old).
 func (s *Store) SweepOrphans() {
-	_, _ = s.h.DB().Exec(`DELETE FROM entry_lines WHERE entry_id NOT IN (SELECT id FROM entries)`)
+	cutoff := s.h.Clock().Now().UTC().Add(-orphanAge).Format("2006-01-02T15:04:05Z")
+	_, _ = s.h.DB().Exec(`DELETE FROM entry_lines WHERE entry_id NOT IN (SELECT id FROM entries)
+		AND (created_at IS NULL OR created_at < ?)`, cutoff)
 }
 
 // replicaKeepDays: a replica's delivered copies are transient (architect

@@ -5,6 +5,7 @@ package store_test
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/universaltill/ut-plugin-page-service-logbook/src/store"
 )
@@ -115,5 +116,43 @@ func TestSaleLineUniqueIndex(t *testing.T) {
 	}
 	if _, err := db.Exec(ins, "x4", nil); err != nil {
 		t.Fatalf("unlinked lines are not unique: %v", err)
+	}
+}
+
+// The maintenance sweep runs while other events write (the host runs them
+// concurrently): a parent-less line younger than an hour may belong to an
+// entry mid-write and is kept; an old one (a crash before the commit point)
+// is removed (fix-plug finding 8).
+func TestSweepOrphansKeepsYoungLines(t *testing.T) {
+	e := newEnv(t, "GB")
+	db := e.f.DB()
+	ins := `INSERT INTO entry_lines (entry_id, line_no, name, qty, amount_minor, created_at) VALUES (?, 1, 'Cut', 1, 1, ?)`
+	now := e.f.Time
+	for id, at := range map[string]any{
+		"young":  now.Add(-10 * time.Minute).UTC().Format("2006-01-02T15:04:05Z"),
+		"old":    now.Add(-2 * time.Hour).UTC().Format("2006-01-02T15:04:05Z"),
+		"legacy": nil, // written before migration 0002: never mid-write
+	} {
+		if _, err := db.Exec(ins, id, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a := mustStaff(t, e, "Ann")
+	en, err := e.s.CreateFree(boss, free(a.ID, 100, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.s.SweepOrphans()
+	rows, _ := db.Query("SELECT entry_id FROM entry_lines ORDER BY entry_id")
+	got := []string{}
+	for _, r := range rows {
+		got = append(got, r["entry_id"].(string))
+	}
+	want := []string{en.ID, "young"}
+	if en.ID > "young" {
+		want = []string{"young", en.ID}
+	}
+	if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("lines after sweep = %v, want %v", got, want)
 	}
 }
