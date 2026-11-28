@@ -44,6 +44,11 @@ type Fake struct {
 	idN       int
 	// Calls to db for write-path assertions.
 	WriteStmts []string
+	// BeforeExec, when set, runs once before the first Exec whose SQL
+	// contains BeforeExecOn: another event's write landing between this
+	// event's check and its write (the host runs events concurrently).
+	BeforeExec   func()
+	BeforeExecOn string
 }
 
 // Forwarded is one queued outbox row.
@@ -124,6 +129,10 @@ func (d fakeDB) Exec(q string, args ...any) (int64, error) {
 	}
 	if strings.Contains(strings.TrimSuffix(strings.TrimSpace(q), ";"), ";") {
 		return 0, fmt.Errorf("one statement per db_exec")
+	}
+	if fn := d.f.BeforeExec; fn != nil && strings.Contains(q, d.f.BeforeExecOn) {
+		d.f.BeforeExec = nil
+		fn()
 	}
 	d.f.WriteStmts = append(d.f.WriteStmts, q)
 	r, err := d.f.sqldb.Exec(q, args...)

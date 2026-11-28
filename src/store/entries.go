@@ -193,14 +193,16 @@ func (s *Store) insert(e Entry, lines []LineInput, nos []int) (fwd bool, err err
 	if rerr != nil || role == "replica" {
 		e.FwdState = "pending"
 	}
+	claim := "" // a linked entry claims its sale lines (claims.go)
+	if nos != nil && e.SaleRef != "" && !e.Voided {
+		claim = e.SaleRef
+	}
 	for i, l := range lines {
 		no := i + 1
 		if nos != nil {
 			no = nos[i]
 		}
-		if _, err := db.Exec(`INSERT INTO entry_lines (entry_id, line_no, item_id, name, qty, amount_minor, description, staff_id)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, e.ID, no, nullable(l.ItemID), l.Name, l.Qty, l.AmountMinor,
-			nullable(l.Description), nullable(l.StaffID)); err != nil {
+		if err := s.writeLine(sqlInsertLine, e.ID, no, l, claim); err != nil {
 			return false, err
 		}
 	}

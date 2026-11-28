@@ -66,10 +66,17 @@ func (s *Store) Apply(fromTill string, w Wire) *ApplyError {
 		}
 	}
 	db := s.h.DB()
+	claim := "" // a new link claims its sale lines (claims.go), as notLinkedYet reads
+	if e.SaleRef != "" && e.SupersedesID == "" && !e.Voided {
+		claim = e.SaleRef
+	}
 	for _, l := range w.Lines {
-		if _, err := db.Exec(`INSERT OR IGNORE INTO entry_lines (entry_id, line_no, item_id, name, qty, amount_minor, description, staff_id)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, e.ID, l.LineNo, nullable(l.ItemID), l.Name, l.Qty, l.AmountMinor,
-			nullable(l.Description), nullable(l.StaffID)); err != nil {
+		in := LineInput{ItemID: l.ItemID, Name: l.Name, Qty: l.Qty, AmountMinor: l.AmountMinor, Description: l.Description, StaffID: l.StaffID}
+		if err := s.writeLine(sqlApplyLine, e.ID, l.LineNo, in, claim); err != nil {
+			if err == ErrConflict { // linked meanwhile by another event
+				_, _ = db.Exec(sqlDropUncommittedLines, e.ID)
+				return &ApplyError{false, "already_linked"}
+			}
 			return &ApplyError{true, "db"}
 		}
 	}
