@@ -21,7 +21,7 @@ ep = (m.get("entrypoint") or "").lstrip("./")
 if not ep.endswith(".wasm"): errs.append("wasm runtime needs a .wasm entrypoint")
 elif not os.path.isfile(ep): errs.append(f"module not found: {ep} (run scripts/build.sh)")
 want_perms = {"events:receive","db:own","ui:page","ui:slot:admin.pages","ui:slot:reports.panels","view:inventory",
-              "view:users","view:sales","view:shop","records:sync","schedule"}
+              "view:users","view:sales","view:shop","records:sync","payout:suggest","schedule"}
 perms = set(m.get("permissions", []))
 if perms != want_perms:
     errs.append(f"permissions must be exactly the reviewed set; extra={sorted(perms-want_perms)} missing={sorted(want_perms-perms)}")
@@ -49,11 +49,11 @@ for k in ("collections", "snapshots"):
     if len(rf.get(k, [])) > 8: errs.append(f"records_forward.{k}: at most 8")
 hooks = {h.get("event") for h in m.get("hooks", [])}
 src = "".join(open(f).read() for f in glob.glob("src/app/*.go") if not f.endswith("_test.go"))
-for ev in ("ui.view.ask", "ui.action.ask", "plugin.records.received.ask", "export.requested.ask", m["id"] + ".maintenance.tick"):
+for ev in ("ui.view.ask", "ui.action.ask", "plugin.records.received.ask", "export.requested.ask", "tips.suggest.ask", m["id"] + ".maintenance.tick"):
     if ev not in hooks: errs.append(f"missing hook {ev}")
 for h in hooks:
     if h.startswith(m["id"] + ".") and not re.match(r'^[a-z0-9_-]+(\.[a-z0-9_-]+)+$', h): errs.append(f"job event {h} must be lower-case dotted segments")
-    if h.split(".")[0] not in ("ui", "plugin", "export", "com") : errs.append(f"unexpected hook {h}")
+    if h.split(".")[0] not in ("ui", "plugin", "export", "tips", "com") : errs.append(f"unexpected hook {h}")
 for s in m.get("schedules", []):
     if s.get("event") not in hooks: errs.append(f"schedule {s.get('event')} has no hook")
 en = json.load(open("locales/en.json"))

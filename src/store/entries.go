@@ -61,6 +61,10 @@ const MaxMinor int64 = 100_000_000_000
 
 // currentWhere selects the CURRENT entries (alias e): not voided, not
 // shadowed, no live child (ADR-0149, architect §5.6).
+// insertCols are entries' columns in insert order (shadowed is the literal 0).
+const insertCols = `id, origin_till_id, author_user_id, staff_id, business_date, currency, payment_type,
+	total_minor, tip_minor, sale_ref, supersedes_id, voided, shadowed, fwd_state, mode, created_at`
+
 const currentWhere = `e.voided = 0 AND e.shadowed = 0 AND NOT EXISTS
  (SELECT 1 FROM entries c WHERE c.supersedes_id = e.id AND c.shadowed = 0)`
 
@@ -206,12 +210,15 @@ func (s *Store) insert(e Entry, lines []LineInput, nos []int) (fwd bool, err err
 			return false, err
 		}
 	}
-	if _, err := db.Exec(`INSERT INTO entries (id, origin_till_id, author_user_id, staff_id, business_date, currency, payment_type,
-		total_minor, tip_minor, sale_ref, supersedes_id, voided, shadowed, fwd_state, mode, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`, e.ID, e.OriginTill, e.AuthorUserID, nullable(e.StaffID),
-		e.BusinessDate, e.Currency, e.Payment, e.TotalMinor, e.TipMinor, nullable(e.SaleRef), nullable(e.SupersedesID),
-		b2i(e.Voided), e.FwdState, e.Mode, e.CreatedAt); err != nil {
+	q, args := entryInsert("INSERT", insertCols, "?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?", e, []any{e.ID, e.OriginTill, e.AuthorUserID,
+		nullable(e.StaffID), e.BusinessDate, e.Currency, e.Payment, e.TotalMinor, e.TipMinor, nullable(e.SaleRef),
+		nullable(e.SupersedesID), b2i(e.Voided), e.FwdState, e.Mode, e.CreatedAt})
+	n, err := db.Exec(q, args...)
+	if err != nil {
 		return false, err
+	}
+	if n == 0 { // only the tip guard can skip a plain INSERT
+		return false, ErrConflict
 	}
 	return rerr == nil && role == "replica", nil
 }

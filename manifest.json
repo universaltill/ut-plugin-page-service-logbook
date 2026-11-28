@@ -1,7 +1,7 @@
 {
   "id": "com.universaltill.service-logbook",
   "name": "Service Staff Logbook",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "A logbook of the services each staff member does, the tips they get and what they took in cash and card, for hairdressers, nail bars, barbers and other service shops. Staff do not need a till login. Money is typed in or, where your country requires it, linked to a signed till sale. Works offline; a second till sends its entries to the main till when it can. Nothing is installed or switched on by default.",
   "author": "Universal Till",
   "website": "https://universaltill.com",
@@ -25,6 +25,7 @@
     "view:sales",
     "view:shop",
     "records:sync",
+    "payout:suggest",
     "schedule"
   ],
   "views_used": [
@@ -81,6 +82,10 @@
     {
       "event": "export.requested.ask",
       "action": "export"
+    },
+    {
+      "event": "tips.suggest.ask",
+      "action": "tips"
     }
   ],
   "entries": [

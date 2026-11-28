@@ -4,8 +4,8 @@ package host
 
 import (
 	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
+	"sync/atomic"
 	"time"
 
 	"github.com/universaltill/universal-till/sdk/plugin"
@@ -80,11 +80,10 @@ func (wasmClock) Now() time.Time { return time.Now().UTC() }
 
 type wasmIDs struct{}
 
+var idSeq atomic.Uint64
+
 func (wasmIDs) NewID() string {
 	var b [16]byte
-	_, _ = rand.Read(b[:])
-	b[6] = b[6]&0x0f | 0x40
-	b[8] = b[8]&0x3f | 0x80
-	h := hex.EncodeToString(b[:])
-	return h[0:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:]
+	_, _ = rand.Read(b[:]) // deterministic on the till's runtime: mixed with the clock below
+	return mixID(b, time.Now().UnixNano(), idSeq.Add(1))
 }

@@ -49,3 +49,30 @@ func (s *Store) writeLine(q, entryID string, no int, l LineInput, saleRef string
 	}
 	return err
 }
+
+// Tip claim (ut-docs#7269). A sale's tip rides on exactly one current entry.
+// The "tip not counted yet" read before a write and the entry insert are two
+// host calls and the host runs events concurrently, so the insert itself
+// carries the guard: for a NEW link that carries a tip it is one
+// INSERT ... SELECT ... WHERE NOT EXISTS (a current entry of the sale that
+// already has a tip), which SQLite runs atomically. Zero rows affected on a
+// guarded insert means the tip is already counted (ErrConflict). Sale lines
+// keep their own claim (the unique index above), which is why two writers of
+// the SAME lines never both commit; this closes the case of different lines.
+
+// tipGuarded reports whether e is a new link that carries a sale's tip.
+func tipGuarded(e Entry) bool {
+	return e.SaleRef != "" && e.TipMinor > 0 && e.SupersedesID == "" && !e.Voided
+}
+
+// entryInsert wraps an INSERT of entries' columns (cols, n ?-placeholders in
+// the order of args) with the tip guard when e needs it. verb is "INSERT" or
+// "INSERT OR IGNORE"; literal is appended to the values (fixed columns).
+func entryInsert(verb, cols, values string, e Entry, args []any) (string, []any) {
+	if !tipGuarded(e) {
+		return verb + " INTO entries (" + cols + ") VALUES (" + values + ")", args
+	}
+	return verb + " INTO entries (" + cols + ") SELECT " + values +
+			" WHERE NOT EXISTS (SELECT 1 FROM entries e WHERE e.sale_ref = ? AND e.tip_minor > 0 AND " + currentWhere + ")",
+		append(append([]any{}, args...), e.SaleRef)
+}
