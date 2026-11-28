@@ -242,7 +242,7 @@ func TestLogbookRealGuest_ReplicaForward(t *testing.T) {
 	}
 	ent := r.rows(`SELECT id, fwd_state, total_minor FROM entries`)
 	if len(ent) != 1 {
-		t.Skip("entry not created: the running core's shop.context.v2 has no business_date yet (ut-docs#7231)")
+		t.Fatalf("entry not created: the checkout's shop.context.v2 needs business_date (universal-till#2800, ut-docs#7231): %v", ent)
 	}
 	id := ent[0]["id"].(string)
 	if ent[0]["fwd_state"] != "queued" || ent[0]["total_minor"] != float64(2500) {

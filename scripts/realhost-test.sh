@@ -5,7 +5,8 @@
 # internal to universal-till, so the test template is copied into the
 # checkout (internal/plugins/logbook_realguest_test.go) for the run and
 # removed again. Usage: scripts/realhost-test.sh <universal-till checkout>
-# The checkout must be at or after the plugin-DB slice B merge (0e049b0).
+# The checkout must be at or after the plugin-DB slice B merge (0e049b0) and
+# carry shop.context.v2 country + business_date (universal-till#2800, ut-docs#7231).
 set -euo pipefail
 core="${1:?usage: realhost-test.sh <universal-till checkout>}"
 here="$(cd "$(dirname "$0")/.." && pwd)"
