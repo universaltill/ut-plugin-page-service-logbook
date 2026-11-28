@@ -91,8 +91,11 @@ func (s *Store) Apply(fromTill string, w Wire) *ApplyError {
 	if n == 0 {
 		// OR IGNORE skips a duplicate id (a redelivery: success) or, for a
 		// new tip link, the tip guard (the sale's tip is already counted).
+		// A failed read is no verdict: retry, never a terminal refusal.
 		if _, gerr := s.GetEntry(e.ID); gerr == nil {
 			return nil
+		} else if gerr != ErrNotFound {
+			return &ApplyError{true, "db"}
 		}
 		_, _ = db.Exec(sqlDropUncommittedLines, e.ID)
 		return &ApplyError{false, "already_linked"}

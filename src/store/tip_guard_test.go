@@ -41,3 +41,34 @@ func TestApplyTipCountedOnceWhenAnotherTipLandsBetweenCheckAndWrite(t *testing.T
 		t.Fatalf("the refused entry's line must not stay behind: %d lines", n)
 	}
 }
+
+// Review finding (plugins-wire2): when the guarded insert writes nothing, the
+// read that tells a redelivery from a refused tip can itself fail. That is
+// not a verdict: the record stays retryable. Before, a read error was
+// answered as a terminal already_linked, so the replica showed "Not accepted
+// by the main till" for an entry the main till holds.
+func TestApplyUnreadableOutcomeAfterSkippedInsertIsRetried(t *testing.T) {
+	e := newEnv(t, "GB")
+	_ = e.s.SetMoneyEntry("linked")
+	e.f.SetView("sales.receipts.v1", []map[string]any{receipt("r1", false, 300, cashPay(5000))})
+	a := mustStaff(t, e, "Ann")
+	x := linkedWire("x1", a.ID, "r1", 3000, 300, 1)
+	e.f.BeforeExecOn = "INTO entries"
+	e.f.BeforeExec = func() {
+		if ae := e.s.Apply("tillB", x); ae != nil { // the same record, delivered twice at once
+			t.Fatalf("the concurrent delivery: %v", ae)
+		}
+		e.f.FailQuery = "FROM entries WHERE id"
+	}
+	ae := e.s.Apply("tillB", x)
+	e.f.FailQuery = ""
+	if ae == nil || !ae.Retry {
+		t.Fatalf("an unreadable outcome must be retried, never refused for good: %+v", ae)
+	}
+	if ae := e.s.Apply("tillB", x); ae != nil {
+		t.Fatalf("the retry of a stored record is success: %v", ae)
+	}
+	if n := e.s.CountLines(); n != 1 {
+		t.Fatalf("the stored entry keeps its line: %d lines", n)
+	}
+}
